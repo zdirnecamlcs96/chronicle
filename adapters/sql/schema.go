@@ -54,7 +54,7 @@ func (d Dialect) ddl() []string {
 				doc_id          VARCHAR(255) NOT NULL,
 				commit_id       CHAR(64)     NOT NULL,
 				at              DATETIME(6)  NOT NULL,
-				PRIMARY KEY (idempotency_key)
+				PRIMARY KEY (doc_id, idempotency_key)
 			) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 		}
 	}

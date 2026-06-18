@@ -55,7 +55,7 @@ flowchart TB
 
     DBA[("MySQL")]
     DBB[("ClickHouse")]
-    CONF["core/conformance<br/>RunLogConformance · RunSerializableAppend"]
+    CONF["core/conformance<br/>RunLogConformance · RunSerializableAppend · RunDeduperConformance"]
 
     APP -->|in-process: Recorder| REC
     APP -->|in-process: facade| SVC
@@ -90,9 +90,10 @@ write a thin transport over the `Service` facade.
 **Talking over a wire** (chronicle ships none of it — a Go server often needs none):
 
 - **In-process facade (no wire, no `net/http`):** `changelog.NewService(log)`
-  returns a `Service` — seal + reads + producer idempotency + cross-document index
-  over any `Log`. Init it once and call it directly; it lives in `core` and has
-  **zero http dependency**. A Go server usually stops here.
+  returns a `Service` — seal + reads, plus producer idempotency and cross-document
+  index when the backend implements `Deduper`/`Indexer` (the shipped adapters all
+  do). Init it once and call it directly; it lives in `core` and has **zero http
+  dependency**. A Go server usually stops here.
 
   ```go
   svc := changelog.NewService(log)        // pick any backend Log
@@ -135,16 +136,16 @@ type Indexer interface { // cross-document queries
     AllCommits(ctx context.Context, limit int) ([]DocCommit, error)
     FindByID(ctx context.Context, commitID string) (DocCommit, bool, error)
 }
-type Deduper interface { // producer idempotency
-    Seen(ctx context.Context, key string) (Commit, bool, error)
-    MarkSeen(ctx context.Context, key, docID string, c Commit) error
+type Deduper interface { // producer idempotency (keys scoped per document)
+    Seen(ctx context.Context, docID, key string) (Commit, bool, error)
+    MarkSeen(ctx context.Context, docID, key string, c Commit) error
 }
 ```
 
-`adapters/sql` and `adapters/clickhouse` implement all three (`Log` + `Indexer`
-+ `Deduper`). `adapters/memory` implements **`Log` only** — for cross-document
-queries and dedup on the memory backend, the consumer (e.g. the reference
-server) falls back to its own in-memory bookkeeping.
+All three shipped adapters implement `Log` + `Indexer` + `Deduper`: `adapters/sql`
+and `adapters/clickhouse` durably (surviving a restart), `adapters/memory` in
+process. The `Service` keeps no fallback of its own — a `Log` that implements
+neither capability simply has no cross-document queries and no dedup.
 
 ## Backends
 
@@ -175,7 +176,7 @@ log := changelogmemory.New() // dev/test — swap for a durable adapter in prod
 rec := changelog.NewRecorder("invoice-42", log)
 rec.Append(changelog.Change{Actor: "alice", Path: "status", Kind: "put", From: "draft", To: "sent"})
 commit, err := rec.Commit(ctx, changelog.WithMessage("send invoice"))
-// commit.ID = SHA256(parent + message + canonical(changes)), chained onto Head
+// commit.ID = SHA256 over length-framed (parent, message, canonical(changes)), chained onto Head
 
 history, _ := log.Commits(ctx, "invoice-42", 0) // newest-first
 ```
@@ -230,13 +231,17 @@ func TestMyBackend(t *testing.T) {
     })
     // transactional backends additionally:
     // conformance.RunSerializableAppend(t, newMyLog)
+    // backends implementing Deduper additionally:
+    // conformance.RunDeduperConformance(t, newMyLog)
 }
 ```
 
 `RunLogConformance` (mandatory): empty head/commits, append→head, parent
 chaining, newest-first order, limit, per-doc isolation, context cancellation.
 `RunSerializableAppend` (opt-in): concurrent same-doc seals form one linear
-chain — passes only for transactional backends.
+chain — passes only for transactional backends. `RunDeduperConformance` (opt-in):
+for backends implementing `Deduper`, idempotency keys are scoped per document — a
+key marked on one document never resolves on another.
 
 ## Writing an adapter
 
@@ -244,9 +249,10 @@ The **core declares the contract**; an adapter follows it (Go has no abstract
 base class — the interface *is* the contract, satisfied structurally):
 
 1. Implement `changelog.Log` — mandatory: `AppendCommit` / `Commits` / `Head`.
-2. Optionally implement `changelog.Indexer` and/or `changelog.Deduper` for native
-   cross-document queries / durable dedup. If you don't, a consumer falls back to
-   its own bookkeeping (as a consumer would for the memory adapter).
+2. Optionally implement `changelog.Indexer` and/or `changelog.Deduper` for
+   cross-document queries / producer idempotency. If you don't, the `Service`
+   simply offers neither for your backend — it keeps no fallback. (`adapters/memory`
+   implements both in process; the durable adapters do so across a restart.)
 3. Assert it at compile time: `var _ changelog.Log = (*MyLog)(nil)`.
 4. Prove behavior: pass `conformance.RunLogConformance` (and
    `RunSerializableAppend` if your backend serializes same-document appends).

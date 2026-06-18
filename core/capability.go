@@ -4,10 +4,11 @@ import "context"
 
 // This file defines OPTIONAL capability interfaces a Log backend MAY implement.
 // They are not part of the core Log contract (which stays AppendCommit/Commits/
-// Head). Consumers type-assert a Log for these and fall back to their own
-// bookkeeping when a backend (such as the memory adapter) does not implement
-// them. A durable backend (e.g. adapters/sql) implements them natively so that
-// cross-document queries and producer idempotency survive a restart.
+// Head). The Service (NewService) type-asserts a Log for these and delegates to
+// them; it keeps no fallback of its own, so a backend that implements neither
+// simply has no cross-document queries and no dedup. Every shipped adapter
+// implements both — adapters/sql and adapters/clickhouse durably (across a
+// restart), adapters/memory in memory.
 
 // DocCommit pairs a Commit with the document it belongs to, for cross-document
 // query results. The per-document Log methods omit the docID because the caller
@@ -34,9 +35,11 @@ type Indexer interface {
 // delivery retry carrying a previously seen key returns the original commit
 // instead of sealing a duplicate, even across a restart.
 type Deduper interface {
-	// Seen returns the commit a key previously sealed; ok is false if unseen.
-	Seen(ctx context.Context, key string) (c Commit, ok bool, err error)
+	// Seen returns the commit (docID, key) previously sealed; ok is false if
+	// unseen. Keys are scoped per document: the same key on a different docID is a
+	// distinct delivery, so a replay never returns another document's commit.
+	Seen(ctx context.Context, docID, key string) (c Commit, ok bool, err error)
 	// MarkSeen records that key sealed commit c for document docID. First writer
-	// wins: it is a no-op if the key already exists.
-	MarkSeen(ctx context.Context, key, docID string, c Commit) error
+	// wins: it is a no-op if (docID, key) already exists.
+	MarkSeen(ctx context.Context, docID, key string, c Commit) error
 }

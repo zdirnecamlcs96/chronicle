@@ -27,7 +27,7 @@ const seenDDL = `CREATE TABLE IF NOT EXISTS seen (
 	commit_id       String,
 	at              DateTime64(6)
 ) ENGINE = ReplacingMergeTree
-ORDER BY idempotency_key`
+ORDER BY (doc_id, idempotency_key)`
 
 // Migrate creates the schema if absent. Safe to call on every startup.
 func (l *Log) Migrate(ctx context.Context) error {

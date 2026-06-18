@@ -2,6 +2,7 @@ package changelog
 
 import (
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"reflect"
@@ -49,21 +50,41 @@ func TestComputeID_MessagePresenceChangesID(t *testing.T) {
 	}
 }
 
-func TestComputeID_EmptyMessageEquivalentToPreMessage(t *testing.T) {
-	// Belt-and-braces: empty message writes zero bytes to the hash, so its
-	// commit ID must be exactly what computeID would have produced before
-	// the Message field existed.
+func TestComputeID_FieldsAreUnambiguous(t *testing.T) {
+	// Without length-framing, parent||message is ambiguous: a root commit
+	// (parent="") whose message begins with a real commit id hashes the same
+	// bytes as the child commit that has that id as its parent. Framing the
+	// fields must keep the (parent, message) split distinct.
+	changes := []Change{{Actor: "a", To: "1"}}
+	child, _ := computeID("abc", "def", changes)
+	rootShadow, _ := computeID("", "abcdef", changes)
+	if child == rootShadow {
+		t.Fatal("ambiguous preimage: (parent, message) split collides")
+	}
+}
+
+func TestComputeID_CanonicalPreimageFormat(t *testing.T) {
+	// Pin the content-address preimage so it cannot drift accidentally: drift
+	// would silently change every commit id and break stored chains. Each field
+	// is framed with an 8-byte big-endian length prefix.
 	changes := []Change{{Actor: "a", Path: "x", Kind: "put", To: "1"}}
-	got, _ := computeID("parent-X", "", changes)
+	got, _ := computeID("parent-X", "msg", changes)
 
 	payload, _ := json.Marshal(changes)
 	h := sha256.New()
-	h.Write([]byte("parent-X"))
-	h.Write(payload)
+	writeFramed := func(b []byte) {
+		var n [8]byte
+		binary.BigEndian.PutUint64(n[:], uint64(len(b)))
+		h.Write(n[:])
+		h.Write(b)
+	}
+	writeFramed([]byte("parent-X"))
+	writeFramed([]byte("msg"))
+	writeFramed(payload)
 	want := hex.EncodeToString(h.Sum(nil))
 
 	if got != want {
-		t.Fatalf("empty-message hash drift: got %s want %s", got, want)
+		t.Fatalf("preimage format drift: got %s want %s", got, want)
 	}
 }
 

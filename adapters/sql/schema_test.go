@@ -21,7 +21,7 @@ func TestDDL_EncodesCorrectnessConstraints(t *testing.T) {
 		"UNIQUE KEY uq_doc_parent (doc_id, parent)", // anti-fork: one child per parent, one root per doc
 		"KEY idx_id (id)",                           // keeps FindByID fast despite non-leftmost id
 		"CREATE TABLE IF NOT EXISTS seen",           // durable idempotency
-		"PRIMARY KEY (idempotency_key)",
+		"PRIMARY KEY (doc_id, idempotency_key)",     // idempotency keys are scoped per document
 	} {
 		if !strings.Contains(ddl, want) {
 			t.Errorf("ddl is missing the constraint %q", want)

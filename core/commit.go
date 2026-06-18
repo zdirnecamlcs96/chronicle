@@ -2,8 +2,10 @@ package changelog
 
 import (
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"hash"
 	"sort"
 	"time"
 )
@@ -21,8 +23,7 @@ import (
 //   - At       when it was sealed (NOT hashed).
 //   - Authors  the distinct Change actors, sorted (NOT hashed).
 //   - Message  an optional annotation from WithMessage; IS hashed, so editing it
-//              after the fact breaks the chain. "" hashes to zero bytes, leaving
-//              pre-Message commit IDs untouched.
+//              after the fact breaks the chain.
 //   - Changes  the edits this commit seals — its diff.
 type Commit struct {
 	ID      string    `json:"id"`
@@ -36,18 +37,30 @@ type Commit struct {
 // computeID is the commit's content address: SHA-256 over the parent ID, the
 // message, and the canonical JSON of the changes — deliberately NOT the time or
 // authors. Equal (parent, message, changes) always yield the same ID; any
-// difference changes it — a tamper-evident chain. An empty message writes zero
-// bytes, so a commit made without one hashes identically to a pre-Message commit.
+// difference changes it — a tamper-evident chain. Each field is length-framed
+// (see writeField) so the boundaries between parent, message, and changes are
+// unambiguous; without that framing a root commit (parent="") whose message
+// began with a real commit id would hash the same bytes as the child commit
+// holding that id as its parent, forging a collision.
 func computeID(parent, message string, changes []Change) (string, error) {
 	payload, err := json.Marshal(changes)
 	if err != nil {
 		return "", err
 	}
 	h := sha256.New()
-	h.Write([]byte(parent))
-	h.Write([]byte(message))
-	h.Write(payload)
+	writeField(h, []byte(parent))
+	writeField(h, []byte(message))
+	writeField(h, payload)
 	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// writeField hashes b prefixed by its length as 8 big-endian bytes, framing the
+// field so adjacent fields cannot be re-split into a colliding preimage.
+func writeField(h hash.Hash, b []byte) {
+	var n [8]byte
+	binary.BigEndian.PutUint64(n[:], uint64(len(b)))
+	h.Write(n[:])
+	h.Write(b)
 }
 
 // distinctAuthors returns the sorted, de-duplicated actor list of the changes.

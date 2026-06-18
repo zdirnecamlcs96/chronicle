@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"time"
+	"unicode/utf8"
 
 	"github.com/go-sql-driver/mysql"
 	"github.com/zdirnecamlcs96/chronicle/core"
@@ -82,6 +83,9 @@ var _ changelog.Log = (*Log)(nil)
 // parent (or a duplicate) yields ErrParentConflict.
 func (l *Log) AppendCommit(ctx context.Context, docID string, c changelog.Commit) error {
 	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := checkLen("doc_id", docID); err != nil {
 		return err
 	}
 	authors, err := json.Marshal(c.Authors)
@@ -197,4 +201,18 @@ func scanCommit(s scanner) (changelog.Commit, error) {
 func isDuplicate(err error) bool {
 	var me *mysql.MySQLError
 	return errors.As(err, &me) && me.Number == 1062 // ER_DUP_ENTRY
+}
+
+// maxVarcharLen is the VARCHAR(255) width of doc_id and idempotency_key (see
+// schema.go). MySQL counts characters, so the bound is on runes.
+const maxVarcharLen = 255
+
+// checkLen rejects a value that would overflow its VARCHAR(255) column. Without
+// it, a non-strict MySQL server silently truncates, collapsing distinct ids
+// into one row.
+func checkLen(field, v string) error {
+	if utf8.RuneCountInString(v) > maxVarcharLen {
+		return fmt.Errorf("changelog-sql: %s exceeds %d characters", field, maxVarcharLen)
+	}
+	return nil
 }

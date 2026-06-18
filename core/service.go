@@ -3,8 +3,6 @@ package changelog
 import (
 	"context"
 	"errors"
-	"sort"
-	"sync"
 )
 
 // ErrEmptyChanges is returned by Service.Seal when no changes are supplied.
@@ -47,30 +45,26 @@ func WithIdempotencyKey(key string) SealOption {
 	return func(c *sealConfig) { c.idempotencyKey = key }
 }
 
-// service is the default Service implementation. It prefers the backend's native
-// Indexer/Deduper (detected through any Unwrap() wrappers) and falls back to its
-// own volatile in-memory bookkeeping when the backend lacks them.
+// service is the default Service implementation: a thin facade that holds no
+// storage state of its own. It delegates cross-document queries to the backend's
+// Indexer and producer idempotency to its Deduper (both detected through any
+// Unwrap() wrappers). A backend without an Indexer cannot answer cross-document
+// queries (AllCommits is empty, Get finds nothing); a backend without a Deduper
+// does not dedup (Seal stays at-least-once, never replaying another document's
+// commit). The reference adapters/memory implements both.
 type service struct {
 	log   Log
 	index Indexer
 	idem  Deduper
-
-	mu   sync.RWMutex
-	docs map[string]struct{}
-	seen map[string]Commit
 }
 
-// NewService wraps a Log with cross-document queries and producer idempotency. It
-// detects the backend's optional Indexer/Deduper through any Unwrap() chain, so a
-// durable backend keeps those durable; otherwise it uses in-memory fallback maps
-// (volatile, lost on restart — production should use a backend that implements
-// the capabilities, e.g. adapters/sql).
+// NewService wraps a Log with cross-document queries and producer idempotency,
+// detecting the backend's optional Indexer/Deduper through any Unwrap() chain.
+// The service keeps no fallback state: cross-document queries require an Indexer
+// backend and idempotency requires a Deduper. adapters/memory and the durable
+// adapters (e.g. adapters/sql) implement both.
 func NewService(log Log) Service {
-	s := &service{
-		log:  log,
-		docs: map[string]struct{}{},
-		seen: map[string]Commit{},
-	}
+	s := &service{log: log}
 	for l := log; l != nil; {
 		if s.index == nil {
 			if idx, ok := l.(Indexer); ok {
@@ -103,7 +97,7 @@ func (s *service) Seal(ctx context.Context, docID string, changes []Change, mess
 		o(&cfg)
 	}
 	if cfg.idempotencyKey != "" {
-		if prior, ok, err := s.lookupSeen(ctx, cfg.idempotencyKey); err != nil {
+		if prior, ok, err := s.lookupSeen(ctx, docID, cfg.idempotencyKey); err != nil {
 			return Commit{}, err
 		} else if ok {
 			return prior, nil
@@ -130,36 +124,25 @@ func (s *service) Seal(ctx context.Context, docID string, changes []Change, mess
 	if err != nil {
 		return Commit{}, err
 	}
-	if s.index == nil {
-		s.mu.Lock()
-		s.docs[docID] = struct{}{}
-		s.mu.Unlock()
-	}
 	if cfg.idempotencyKey != "" {
 		// Best-effort: a failed MarkSeen degrades to at-least-once; the commit is
 		// already durable.
-		_ = s.recordSeen(ctx, cfg.idempotencyKey, docID, c)
+		_ = s.recordSeen(ctx, docID, cfg.idempotencyKey, c)
 	}
 	return c, nil
 }
 
-func (s *service) lookupSeen(ctx context.Context, key string) (Commit, bool, error) {
+func (s *service) lookupSeen(ctx context.Context, docID, key string) (Commit, bool, error) {
 	if s.idem != nil {
-		return s.idem.Seen(ctx, key)
+		return s.idem.Seen(ctx, docID, key)
 	}
-	s.mu.RLock()
-	c, ok := s.seen[key]
-	s.mu.RUnlock()
-	return c, ok, nil
+	return Commit{}, false, nil
 }
 
-func (s *service) recordSeen(ctx context.Context, key, docID string, c Commit) error {
+func (s *service) recordSeen(ctx context.Context, docID, key string, c Commit) error {
 	if s.idem != nil {
-		return s.idem.MarkSeen(ctx, key, docID, c)
+		return s.idem.MarkSeen(ctx, docID, key, c)
 	}
-	s.mu.Lock()
-	s.seen[key] = c
-	s.mu.Unlock()
 	return nil
 }
 
@@ -171,50 +154,12 @@ func (s *service) AllCommits(ctx context.Context, limit int) ([]DocCommit, error
 	if s.index != nil {
 		return s.index.AllCommits(ctx, limit)
 	}
-	s.mu.RLock()
-	ids := make([]string, 0, len(s.docs))
-	for d := range s.docs {
-		ids = append(ids, d)
-	}
-	s.mu.RUnlock()
-	sort.Strings(ids)
-	out := []DocCommit{}
-	for _, id := range ids {
-		commits, err := s.log.Commits(ctx, id, 0)
-		if err != nil {
-			return nil, err
-		}
-		for _, c := range commits {
-			out = append(out, DocCommit{DocID: id, Commit: c})
-		}
-	}
-	sort.SliceStable(out, func(i, j int) bool { return out[i].Commit.At.After(out[j].Commit.At) })
-	if limit > 0 && len(out) > limit {
-		out = out[:limit]
-	}
-	return out, nil
+	return []DocCommit{}, nil
 }
 
 func (s *service) Get(ctx context.Context, commitID string) (DocCommit, bool, error) {
 	if s.index != nil {
 		return s.index.FindByID(ctx, commitID)
-	}
-	s.mu.RLock()
-	ids := make([]string, 0, len(s.docs))
-	for d := range s.docs {
-		ids = append(ids, d)
-	}
-	s.mu.RUnlock()
-	for _, id := range ids {
-		commits, err := s.log.Commits(ctx, id, 0)
-		if err != nil {
-			return DocCommit{}, false, err
-		}
-		for _, c := range commits {
-			if c.ID == commitID {
-				return DocCommit{DocID: id, Commit: c}, true, nil
-			}
-		}
 	}
 	return DocCommit{}, false, nil
 }

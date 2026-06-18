@@ -67,8 +67,7 @@ type commitOpts struct{ message string }
 type CommitOption func(*commitOpts)
 
 // WithMessage annotates the commit (`git commit -m`). The message is part of the
-// commit hash, so editing it after the fact breaks the chain; an empty message
-// leaves the commit ID identical to a pre-Message commit.
+// commit hash, so editing it after the fact breaks the chain.
 func WithMessage(s string) CommitOption {
 	return func(o *commitOpts) { o.message = s }
 }

@@ -51,4 +51,5 @@ func TestSQLLog_Conformance(t *testing.T) {
 
 	conformance.RunLogConformance(t, newLog)
 	conformance.RunSerializableAppend(t, newLog)
+	conformance.RunDeduperConformance(t, newLog)
 }

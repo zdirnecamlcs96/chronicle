@@ -18,7 +18,7 @@ func TestDDL_ReplacingMergeTreeDedup(t *testing.T) {
 	if !strings.Contains(seenDDL, "ReplacingMergeTree") {
 		t.Error("seen must use ReplacingMergeTree")
 	}
-	if !strings.Contains(seenDDL, "ORDER BY idempotency_key") {
-		t.Error("seen dedup identity is idempotency_key")
+	if !strings.Contains(seenDDL, "ORDER BY (doc_id, idempotency_key)") {
+		t.Error("seen dedup identity is (doc_id, idempotency_key): keys are scoped per document")
 	}
 }

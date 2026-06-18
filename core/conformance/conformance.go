@@ -194,6 +194,47 @@ func RunSerializableAppend(t *testing.T, newLog NewLog) {
 	}
 }
 
+// RunDeduperConformance is the opt-in contract for backends that implement
+// changelog.Deduper: idempotency keys are scoped PER DOCUMENT. A key marked on
+// one document must not resolve on another — otherwise a replay would disclose,
+// and dedup against, an unrelated document's commit. Run it only against a
+// durable backend that implements Deduper (the memory reference does not).
+func RunDeduperConformance(t *testing.T, newLog NewLog) {
+	t.Helper()
+	log, done := newLog(t)
+	defer done()
+	d, ok := log.(changelog.Deduper)
+	if !ok {
+		t.Skip("backend does not implement changelog.Deduper")
+	}
+	ctx := context.Background()
+
+	a := sealN(t, log, "docA", 1)[0]
+	b := sealN(t, log, "docB", 1)[0]
+
+	if _, ok, err := d.Seen(ctx, "docA", "k"); err != nil || ok {
+		t.Fatalf("unseen key: ok=%v err=%v, want false/nil", ok, err)
+	}
+	if err := d.MarkSeen(ctx, "docA", "k", a); err != nil {
+		t.Fatalf("MarkSeen docA: %v", err)
+	}
+	got, ok, err := d.Seen(ctx, "docA", "k")
+	if err != nil || !ok || got.ID != a.ID {
+		t.Fatalf("docA Seen: got=%q ok=%v err=%v, want %q/true", got.ID, ok, err, a.ID)
+	}
+	// The same key on a different document must NOT leak docA's commit.
+	if _, ok, _ := d.Seen(ctx, "docB", "k"); ok {
+		t.Fatal("idempotency key leaked across documents: docB resolved docA's key")
+	}
+	// And it resolves to docB's own commit once marked there.
+	if err := d.MarkSeen(ctx, "docB", "k", b); err != nil {
+		t.Fatalf("MarkSeen docB: %v", err)
+	}
+	if got, ok, _ := d.Seen(ctx, "docB", "k"); !ok || got.ID != b.ID {
+		t.Fatalf("docB Seen: got=%q ok=%v, want %q", got.ID, ok, b.ID)
+	}
+}
+
 // sealN seals n chained commits into log via a Recorder with a MONOTONIC clock,
 // so every commit gets a distinct, increasing timestamp. This keeps the suite
 // portable: backends that order by seq (SQL) AND backends that order by

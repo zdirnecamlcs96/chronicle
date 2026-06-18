@@ -50,4 +50,5 @@ func TestClickHouseLog_Conformance(t *testing.T) {
 	}
 
 	conformance.RunLogConformance(t, newLog)
+	conformance.RunDeduperConformance(t, newLog)
 }

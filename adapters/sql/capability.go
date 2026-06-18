@@ -64,30 +64,44 @@ func (l *Log) FindByID(ctx context.Context, commitID string) (changelog.DocCommi
 	return dc, true, nil
 }
 
-// Seen returns the commit a key previously sealed.
-func (l *Log) Seen(ctx context.Context, key string) (changelog.Commit, bool, error) {
+// Seen returns the commit (docID, key) previously sealed. The lookup and the
+// commit fetch are both scoped to docID, so a key reused on another document
+// never returns that document's commit.
+func (l *Log) Seen(ctx context.Context, docID, key string) (changelog.Commit, bool, error) {
 	if err := ctx.Err(); err != nil {
 		return changelog.Commit{}, false, err
 	}
 	var commitID string
 	err := l.db.QueryRowContext(ctx,
-		`SELECT commit_id FROM seen WHERE idempotency_key = ?`, key).Scan(&commitID)
+		`SELECT commit_id FROM seen WHERE doc_id = ? AND idempotency_key = ?`, docID, key).Scan(&commitID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return changelog.Commit{}, false, nil
 	}
 	if err != nil {
 		return changelog.Commit{}, false, fmt.Errorf("changelog-sql: seen: %w", err)
 	}
-	dc, ok, err := l.FindByID(ctx, commitID)
-	if err != nil {
-		return changelog.Commit{}, false, err
+	row := l.db.QueryRowContext(ctx,
+		`SELECT doc_id, id, parent, at, authors, message, changes FROM commits WHERE doc_id = ? AND id = ? LIMIT 1`,
+		docID, commitID)
+	dc, err := scanDocCommit(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return changelog.Commit{}, false, nil
 	}
-	return dc.Commit, ok, nil
+	if err != nil {
+		return changelog.Commit{}, false, fmt.Errorf("changelog-sql: seen commit: %w", err)
+	}
+	return dc.Commit, true, nil
 }
 
-// MarkSeen records that key sealed commit c for docID. First writer wins.
-func (l *Log) MarkSeen(ctx context.Context, key, docID string, c changelog.Commit) error {
+// MarkSeen records that key sealed commit c for docID. First (docID, key) writer wins.
+func (l *Log) MarkSeen(ctx context.Context, docID, key string, c changelog.Commit) error {
 	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := checkLen("doc_id", docID); err != nil {
+		return err
+	}
+	if err := checkLen("idempotency_key", key); err != nil {
 		return err
 	}
 	_, err := l.db.ExecContext(ctx,

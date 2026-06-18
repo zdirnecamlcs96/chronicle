@@ -47,7 +47,24 @@ func TestService_Idempotent(t *testing.T) {
 	}
 }
 
-func TestService_AllCommitsFallback(t *testing.T) {
+func TestService_IdempotencyKeyScopedToDoc(t *testing.T) {
+	// The service must thread docID to the Deduper so a key reused on a DIFFERENT
+	// document seals its own commit instead of replaying (and disclosing) the
+	// first document's commit.
+	svc := NewService(newMemLog())
+	ctx := context.Background()
+	_, _ = svc.Seal(ctx, "docA", oneChange(), "", WithIdempotencyKey("k"))
+	if _, err := svc.Seal(ctx, "docB", oneChange(), "", WithIdempotencyKey("k")); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := svc.Commits(ctx, "docB", 0)
+	if len(got) != 1 {
+		t.Fatalf("docB seal dropped by cross-doc key collision: stored=%d want 1", len(got))
+	}
+}
+
+func TestService_AllCommits(t *testing.T) {
+	// Delegates to the backend Indexer and aggregates across documents.
 	svc := NewService(newMemLog())
 	ctx := context.Background()
 	_, _ = svc.Seal(ctx, "d1", oneChange(), "")
@@ -123,11 +140,11 @@ func (c *capLog) AllCommits(ctx context.Context, limit int) ([]DocCommit, error)
 func (c *capLog) FindByID(ctx context.Context, id string) (DocCommit, bool, error) {
 	return DocCommit{}, false, nil
 }
-func (c *capLog) Seen(ctx context.Context, key string) (Commit, bool, error) {
+func (c *capLog) Seen(ctx context.Context, docID, key string) (Commit, bool, error) {
 	c.seenCalled = true
 	return Commit{}, false, nil
 }
-func (c *capLog) MarkSeen(ctx context.Context, key, docID string, cm Commit) error { return nil }
+func (c *capLog) MarkSeen(ctx context.Context, docID, key string, cm Commit) error { return nil }
 
 func TestService_DelegatesToCapabilities(t *testing.T) {
 	cl := &capLog{memLog: newMemLog()}
