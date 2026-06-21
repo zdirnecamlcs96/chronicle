@@ -140,13 +140,23 @@ func (k *Kit) State(ctx context.Context, docID string) (map[string]any, error)  
   (set value at `Path` = `json.Unmarshal(To)`) or `delete` (remove at `Path`).
   `Service.Commits` returns newest-first → reverse before replay. `StateAt`
   replays up to and including `commitID`.
-- **Parent context for richer diffs (the resolution of the snapshot/LCA
-  thread):** because the kit holds the reconstructed document AND the grammar,
-  it derives the enclosing-object context of any change on read — no producer
-  effort. If a `Change` already carries `core.Change.Snapshot` (ground-truth
-  captured at write time), the kit prefers it; otherwise it derives one from the
-  replayed state. Write-time snapshot and read-time derivation are complementary,
-  not redundant.
+- **Per-commit LCA snapshot (the resolution of the snapshot/LCA thread):**
+  exactly **one snapshot per commit**, derived **on read** — nothing is stored in
+  `core` or any adapter.
+  ```go
+  func lcaPath(paths []string) string                              // segment-wise longest common path prefix ("" = root)
+  func (k *Kit) CommitSnapshot(ctx, docID, commitID string) (any, error)  // before-state of the LCA subtree
+  ```
+  - `lcaPath` takes the commit's changed `Path`s and returns their LCA — the
+    longest common path prefix, compared **segment-wise** (`items.0.qty` +
+    `items.2.price` → `items`). NOT LCS (sequence diff) — a different algorithm.
+  - Because a commit's changes are always within one document, an LCA always
+    exists; when changes scatter the LCA is `""` (root) → the snapshot is the
+    whole document. Accepted trade-off (no tighter common parent exists).
+  - The snapshot value = the LCA subtree taken from the document state **as of the
+    commit's parent** (the before-state), obtained via `StateAt(parent)` /
+    `Reconstruct`. For a complete log this equals a write-time snapshot, at zero
+    storage cost.
 
 ## Decisions
 
@@ -157,14 +167,15 @@ func (k *Kit) State(ctx context.Context, docID string) (map[string]any, error)  
 | Diff input | JSON-normalize | structs (json tags) and maps diff uniformly |
 | Path grammar | dotted-all (`items.0.qty`) | no custom parser; RFC6902 surface stays standard |
 | Array diff | positional (v1) | simple; keyed/LCS later via `DiffOption` |
-| `core.Change.Snapshot` | **keep** | write-time = ground truth, read-time = derived; complementary |
+| snapshot | **derived on read in kit (LCA), nothing stored** | `core`/adapters unchanged; equal to a stored snapshot for a complete log |
 | Transport | stdlib `http.ServeMux` | no framework dependency |
 
 ## Out of scope (v1)
 
 - Smart (keyed/LCS) array diffing — option hook left, not built.
 - Auth, middleware, TLS, client SDKs — caller's.
-- Changing `core` (other than reusing the existing `Snapshot` field on read).
+- Changing `core` or any adapter — the kit is purely additive on top (the
+  per-change `Change.Snapshot` experiment was reverted; nothing is stored).
 - A bundled default adapter — caller injects the `Service`.
 
 ## Tests / success criteria
@@ -176,7 +187,9 @@ func (k *Kit) State(ctx context.Context, docID string) (map[string]any, error)  
 3. `kit`: `RecordUpdate` seals exactly the diffed changes; empty diff →
    `ErrEmptyChanges`; idempotency key replays one commit (against memory adapter).
 4. `view`: `Reconstruct` rebuilds known state from a commit sequence; `StateAt`
-   stops at the right commit; parent-context prefers `Snapshot` when present.
+   stops at the right commit; `lcaPath` is segment-wise (clustered → tight parent,
+   scattered → `""` root); `CommitSnapshot` returns the LCA subtree from the
+   parent state.
 5. `httpapi`: each route via `httptest` against an in-memory `Service`; status
    codes for empty/not-found.
 6. `go build ./... && go test ./...` green across the workspace; gofmt clean.
