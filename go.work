@@ -5,4 +5,5 @@ use (
 	./adapters/memory
 	./adapters/sql
 	./adapters/clickhouse
+	./kit
 )
