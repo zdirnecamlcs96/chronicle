@@ -116,13 +116,17 @@ encoders.
 
 ### 4. Optional capabilities via type-assertion + Unwrap chain
 
-**What.** Cross-document queries (`Indexer`) and producer idempotency (`Deduper`)
-are **optional** interfaces a backend MAY implement (`core/capability.go`).
+**What.** Cross-document queries (`Indexer`), producer idempotency (`Deduper`),
+cursor reads of a document's chain (`TailReader`), and a per-document snapshot
+cache (`Snapshotter`) are **optional** interfaces a backend MAY implement
+(`core/capability.go`).
 
 **How.** `NewService` (`core/service.go`) type-asserts the Log for `Indexer` and
 `Deduper`, walking any `Unwrap() Log` chain to find them, and keeps **no
 fallback**: a backend implementing neither simply has no cross-document queries
-and no dedup.
+and no dedup. The kit's `New` walks the same chain (starting from the Service's
+own `Unwrap() Log`) for `TailReader` + `Snapshotter`; with both present, `State`
+reads snapshot + tail instead of replaying the full history.
 
 **Invariant.** New optional backend behavior goes behind a capability interface
 detected this way — not bolted onto the mandatory `Log` port.
@@ -220,10 +224,15 @@ belongs here, not in `core`.
 A backend is "correct" when it passes the suite (`core/conformance`):
 
 - `RunLogConformance` (mandatory): empty head/commits, append→head, parent
-  chaining, newest-first order, limit, per-doc isolation, context cancellation.
+  chaining, hash re-verification of the stored chain (`changelog.Verify`),
+  newest-first order, limit, per-doc isolation, context cancellation.
 - `RunSerializableAppend` (opt-in): concurrent same-doc seals form one linear
   chain — transactional backends only.
 - `RunDeduperConformance` (opt-in): idempotency keys are scoped per document.
+- `RunTailReaderConformance` (opt-in): `CommitsAfter` cursor reads — oldest
+  first, `""` = from root, unknown/foreign cursor → `ErrNoSuchCommit`.
+- `RunSnapshotterConformance` (opt-in): one snapshot per document, latest write
+  wins, bytes round-trip, per-doc isolation.
 
 The suite takes a `NewLog` factory (fresh Log + teardown per subtest) and seals
 with a **monotonic clock** so timestamp-ordered backends and seq-ordered backends

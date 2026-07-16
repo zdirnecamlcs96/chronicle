@@ -22,6 +22,7 @@ type Log struct {
 	mu      sync.Mutex
 	commits map[string][]changelog.Commit
 	seen    map[seenKey]changelog.Commit
+	snaps   map[string]changelog.Snapshot
 }
 
 // seenKey scopes an idempotency key to its document, so a key reused on a
@@ -34,6 +35,7 @@ func New() *Log {
 	return &Log{
 		commits: map[string][]changelog.Commit{},
 		seen:    map[seenKey]changelog.Commit{},
+		snaps:   map[string]changelog.Snapshot{},
 	}
 }
 
@@ -78,6 +80,63 @@ func (m *Log) Head(ctx context.Context, docID string) (string, error) {
 		return "", nil
 	}
 	return src[len(src)-1].ID, nil
+}
+
+// CommitsAfter returns docID's commits strictly after afterID, oldest first.
+// afterID "" means from the root; an unknown afterID returns
+// changelog.ErrNoSuchCommit. limit <= 0 means all.
+func (m *Log) CommitsAfter(ctx context.Context, docID, afterID string, limit int) ([]changelog.Commit, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	src := m.commits[docID]
+	start := 0
+	if afterID != "" {
+		start = -1
+		for i, c := range src {
+			if c.ID == afterID {
+				start = i + 1
+				break
+			}
+		}
+		if start < 0 {
+			return nil, changelog.ErrNoSuchCommit
+		}
+	}
+	tail := src[start:]
+	if limit > 0 && len(tail) > limit {
+		tail = tail[:limit]
+	}
+	return append([]changelog.Commit(nil), tail...), nil
+}
+
+// SaveSnapshot stores s for s.DocID, replacing any prior snapshot (latest wins).
+func (m *Log) SaveSnapshot(ctx context.Context, s changelog.Snapshot) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.State = append([]byte(nil), s.State...) // detach from the caller's buffer
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.snaps[s.DocID] = s
+	return nil
+}
+
+// LoadSnapshot returns docID's stored snapshot; ok is false if none.
+func (m *Log) LoadSnapshot(ctx context.Context, docID string) (changelog.Snapshot, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return changelog.Snapshot{}, false, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s, ok := m.snaps[docID]
+	if !ok {
+		return changelog.Snapshot{}, false, nil
+	}
+	s.State = append([]byte(nil), s.State...) // hand out a copy
+	return s, true, nil
 }
 
 // Seen returns the commit (docID, key) previously sealed; keys are scoped per
@@ -158,7 +217,9 @@ func (m *Log) sortedDocIDs() []string {
 }
 
 var (
-	_ changelog.Log     = (*Log)(nil)
-	_ changelog.Indexer = (*Log)(nil)
-	_ changelog.Deduper = (*Log)(nil)
+	_ changelog.Log         = (*Log)(nil)
+	_ changelog.Indexer     = (*Log)(nil)
+	_ changelog.Deduper     = (*Log)(nil)
+	_ changelog.TailReader  = (*Log)(nil)
+	_ changelog.Snapshotter = (*Log)(nil)
 )

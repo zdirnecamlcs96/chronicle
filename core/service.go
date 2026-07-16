@@ -3,6 +3,8 @@ package changelog
 import (
 	"context"
 	"errors"
+	"math/rand/v2"
+	"time"
 )
 
 // ErrEmptyChanges is returned by Service.Seal when no changes are supplied.
@@ -11,6 +13,11 @@ var ErrEmptyChanges = errors.New("changelog: seal requires at least one change")
 // maxSealAttempts bounds the retry loop when a durable backend reports
 // ErrParentConflict (a concurrent same-document append raced in).
 const maxSealAttempts = 5
+
+// sealBackoffBase is the cap of the first retry's full-jitter sleep; each
+// further attempt doubles it (0..5ms, 0..10ms, 0..20ms, 0..40ms — ~75ms worst
+// case in total), de-synchronizing writers hammering the same document.
+const sealBackoffBase = 5 * time.Millisecond
 
 // Service is the in-process changelog facade — the operations a server needs,
 // over any Log, with NO transport and no net/http dependency. Construct it once
@@ -120,6 +127,12 @@ func (s *service) Seal(ctx context.Context, docID string, changes []Change, mess
 		}
 		// A concurrent same-doc append landed; the Recorder restored the pending
 		// changes, so the next iteration re-reads Head and re-chains/re-hashes.
+		// Jittered backoff de-synchronizes the contenders before that retry.
+		if attempt < maxSealAttempts-1 {
+			if serr := sealBackoff(ctx, attempt); serr != nil {
+				return Commit{}, serr
+			}
+		}
 	}
 	if err != nil {
 		return Commit{}, err
@@ -131,6 +144,25 @@ func (s *service) Seal(ctx context.Context, docID string, changes []Change, mess
 	}
 	return c, nil
 }
+
+// sealBackoff sleeps a full-jitter exponential delay (0..base<<attempt),
+// returning early with ctx.Err() if the context ends first.
+func sealBackoff(ctx context.Context, attempt int) error {
+	d := rand.N(sealBackoffBase << attempt)
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
+}
+
+// Unwrap exposes the backing Log so callers holding only the Service interface
+// (e.g. chroniclekit) can detect the backend's optional capabilities through
+// the same Unwrap() chain NewService itself walks.
+func (s *service) Unwrap() Log { return s.log }
 
 func (s *service) lookupSeen(ctx context.Context, docID, key string) (Commit, bool, error) {
 	if s.idem != nil {

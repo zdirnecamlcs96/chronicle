@@ -12,8 +12,10 @@ import (
 )
 
 var (
-	_ changelog.Indexer = (*Log)(nil)
-	_ changelog.Deduper = (*Log)(nil)
+	_ changelog.Indexer     = (*Log)(nil)
+	_ changelog.Deduper     = (*Log)(nil)
+	_ changelog.TailReader  = (*Log)(nil)
+	_ changelog.Snapshotter = (*Log)(nil)
 )
 
 // AllCommits returns commits across all documents, newest first.
@@ -102,6 +104,100 @@ func (l *Log) MarkSeen(ctx context.Context, docID, key string, c changelog.Commi
 		return fmt.Errorf("changelog-clickhouse: mark seen: %w", err)
 	}
 	return nil
+}
+
+// CommitsAfter returns docID's commits strictly after afterID, oldest first
+// (replay order). afterID "" means from the root. limit <= 0 means all. An
+// afterID not on docID returns changelog.ErrNoSuchCommit. Ties within the same
+// DateTime64(6) microsecond break on id, mirroring Commits/Head's ORDER BY.
+func (l *Log) CommitsAfter(ctx context.Context, docID, afterID string, limit int) ([]changelog.Commit, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	q := `SELECT id, parent, at, authors, message, changes FROM commits FINAL WHERE doc_id = ?`
+	args := []any{docID}
+	if afterID != "" {
+		var at time.Time
+		var id string
+		err := l.db.QueryRowContext(ctx,
+			`SELECT at, id FROM commits FINAL WHERE doc_id = ? AND id = ?`, docID, afterID).Scan(&at, &id)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, changelog.ErrNoSuchCommit
+		}
+		if err != nil {
+			return nil, fmt.Errorf("changelog-clickhouse: commits after: resolve cursor: %w", err)
+		}
+		q += ` AND (at, id) > (?, ?)`
+		args = append(args, at, id)
+	}
+	q += ` ORDER BY at ASC, id ASC`
+	if limit > 0 {
+		q += ` LIMIT ?`
+		args = append(args, limit)
+	}
+	rows, err := l.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("changelog-clickhouse: commits after: %w", err)
+	}
+	defer rows.Close()
+	out := []changelog.Commit{}
+	for rows.Next() {
+		c, err := scanCommit(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// PruneSeen deletes seen records older than olderThan. Unlike the SQL adapter,
+// this reports no affected row count: ClickHouse lightweight deletes are
+// mutations, applied asynchronously in the background, so there is nothing
+// synchronous to count. A native TTL clause on the seen table (`TTL at +
+// INTERVAL ...`) is the alternative for fresh installs. Whichever mechanism is
+// used, retention must exceed the producer's max redelivery window, or a
+// legitimate retry can land as unseen and be double-sealed.
+func (l *Log) PruneSeen(ctx context.Context, olderThan time.Time) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if _, err := l.db.ExecContext(ctx, `DELETE FROM seen WHERE at < ?`, olderThan.UTC()); err != nil {
+		return fmt.Errorf("changelog-clickhouse: prune seen: %w", err)
+	}
+	return nil
+}
+
+// SaveSnapshot stores s, replacing any prior snapshot for s.DocID.
+// ReplacingMergeTree reconciles the replacement at read time via FINAL.
+func (l *Log) SaveSnapshot(ctx context.Context, s changelog.Snapshot) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	_, err := l.db.ExecContext(ctx,
+		`INSERT INTO snapshots (doc_id, commit_id, state, at) VALUES (?, ?, ?, ?)`,
+		s.DocID, s.CommitID, string(s.State), time.Now().UTC())
+	if err != nil {
+		return fmt.Errorf("changelog-clickhouse: save snapshot: %w", err)
+	}
+	return nil
+}
+
+// LoadSnapshot returns the stored snapshot for docID; ok is false if none.
+func (l *Log) LoadSnapshot(ctx context.Context, docID string) (changelog.Snapshot, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return changelog.Snapshot{}, false, err
+	}
+	var commitID, state string
+	err := l.db.QueryRowContext(ctx,
+		`SELECT commit_id, state FROM snapshots FINAL WHERE doc_id = ? LIMIT 1`, docID).Scan(&commitID, &state)
+	if errors.Is(err, sql.ErrNoRows) {
+		return changelog.Snapshot{}, false, nil
+	}
+	if err != nil {
+		return changelog.Snapshot{}, false, fmt.Errorf("changelog-clickhouse: load snapshot: %w", err)
+	}
+	return changelog.Snapshot{DocID: docID, CommitID: commitID, State: []byte(state)}, true, nil
 }
 
 func scanDocCommit(s scanner) (changelog.DocCommit, error) {

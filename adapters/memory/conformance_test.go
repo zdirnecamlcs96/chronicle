@@ -28,6 +28,22 @@ func TestMemoryLog_DeduperConformance(t *testing.T) {
 	})
 }
 
+// The memory adapter implements changelog.TailReader (cursor reads of a
+// document's chain, oldest first).
+func TestMemoryLog_TailReaderConformance(t *testing.T) {
+	conformance.RunTailReaderConformance(t, func(t *testing.T) (changelog.Log, func()) {
+		return changelogmemory.New(), func() {}
+	})
+}
+
+// The memory adapter implements changelog.Snapshotter (one cached snapshot per
+// document, latest wins).
+func TestMemoryLog_SnapshotterConformance(t *testing.T) {
+	conformance.RunSnapshotterConformance(t, func(t *testing.T) (changelog.Log, func()) {
+		return changelogmemory.New(), func() {}
+	})
+}
+
 // The memory adapter implements changelog.Indexer (cross-document queries),
 // moved here from the core service so the service holds no storage state.
 func TestMemoryLog_Indexer(t *testing.T) {

@@ -29,9 +29,21 @@ const seenDDL = `CREATE TABLE IF NOT EXISTS seen (
 ) ENGINE = ReplacingMergeTree
 ORDER BY (doc_id, idempotency_key)`
 
+// snapshots is a pure cache (a reader always has the full replay as fallback),
+// so TRUNCATE is always safe. `at` is the version column: on merge/FINAL the
+// newest save wins, the eventual-consistency analogue of an upsert keyed by
+// doc_id.
+const snapshotsDDL = `CREATE TABLE IF NOT EXISTS snapshots (
+	doc_id    String,
+	commit_id String,
+	state     String,
+	at        DateTime64(6)
+) ENGINE = ReplacingMergeTree(at)
+ORDER BY (doc_id)`
+
 // Migrate creates the schema if absent. Safe to call on every startup.
 func (l *Log) Migrate(ctx context.Context) error {
-	for _, ddl := range []string{commitsDDL, seenDDL} {
+	for _, ddl := range []string{commitsDDL, seenDDL, snapshotsDDL} {
 		if _, err := l.db.ExecContext(ctx, ddl); err != nil {
 			return fmt.Errorf("changelog-clickhouse: migrate: %w", err)
 		}

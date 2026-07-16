@@ -125,6 +125,31 @@ func TestService_ParentConflictRetry(t *testing.T) {
 	}
 }
 
+// alwaysConflictLog forces every AppendCommit into ErrParentConflict and
+// deliberately ignores ctx elsewhere, so a canceled context can only surface
+// through Seal's retry backoff.
+type alwaysConflictLog struct{}
+
+func (alwaysConflictLog) AppendCommit(ctx context.Context, docID string, cm Commit) error {
+	return ErrParentConflict
+}
+func (alwaysConflictLog) Commits(ctx context.Context, docID string, limit int) ([]Commit, error) {
+	return nil, nil
+}
+func (alwaysConflictLog) Head(ctx context.Context, docID string) (string, error) { return "", nil }
+
+func TestService_SealBackoffHonorsContext(t *testing.T) {
+	// With the context already canceled, the retry backoff must return the
+	// context error instead of sleeping through the remaining attempts.
+	svc := NewService(alwaysConflictLog{})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := svc.Seal(ctx, "d1", oneChange(), "")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err=%v want context.Canceled", err)
+	}
+}
+
 // capLog implements Indexer + Deduper so NewService should delegate cross-doc
 // reads and dedup to the backend instead of its in-memory fallback.
 type capLog struct {

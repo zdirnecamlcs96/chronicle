@@ -29,6 +29,9 @@ const (
 //     keeps FindByID fast despite id no longer being a leftmost unique column.
 //   - UNIQUE (doc_id, parent): the anti-fork rule — at most one child per
 //     parent, and exactly one root (parent='') per document.
+//   - snapshots is a pure cache (one row per doc, latest wins; TRUNCATE is
+//     always safe); MEDIUMBLOB = 16 MB ceiling — a materialized doc bigger than
+//     that should not be snapshotted.
 func (d Dialect) ddl() []string {
 	switch d {
 	default: // MySQL
@@ -55,6 +58,13 @@ func (d Dialect) ddl() []string {
 				commit_id       CHAR(64)     NOT NULL,
 				at              DATETIME(6)  NOT NULL,
 				PRIMARY KEY (doc_id, idempotency_key)
+			) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+			`CREATE TABLE IF NOT EXISTS snapshots (
+				doc_id    VARCHAR(255) NOT NULL,
+				commit_id CHAR(64)     NOT NULL,
+				state     MEDIUMBLOB   NOT NULL,
+				at        DATETIME(6)  NOT NULL,
+				PRIMARY KEY (doc_id)
 			) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 		}
 	}

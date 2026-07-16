@@ -3,6 +3,7 @@ package chroniclekit
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	changelog "github.com/zdirnecamlcs96/chronicle/core"
@@ -11,9 +12,24 @@ import (
 // Reconstruct replays commits (OLDEST first) into a document state, applying each
 // change in order: put/create set the value at its path, delete removes it.
 // Intermediate containers are created as needed (numeric segments make arrays).
+// A change whose Kind is outside the kit vocabulary (create/put/delete) is an
+// error — silently guessing would corrupt the reconstruction.
 func Reconstruct(commits []changelog.Commit) (map[string]any, error) {
-	root := map[string]any{}
-	var cur any = root
+	cur, err := replayInto(map[string]any{}, commits)
+	if err != nil {
+		return nil, err
+	}
+	m, ok := cur.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("reconstruct: document root is not an object (got %T)", cur)
+	}
+	return m, nil
+}
+
+// replayInto applies commits (OLDEST first) on top of state, returning the
+// (possibly rebound) root container.
+func replayInto(state any, commits []changelog.Commit) (any, error) {
+	cur := state
 	for _, c := range commits {
 		for _, ch := range c.Changes {
 			next, err := applyChange(cur, ch)
@@ -23,11 +39,7 @@ func Reconstruct(commits []changelog.Commit) (map[string]any, error) {
 			cur = next
 		}
 	}
-	m, ok := cur.(map[string]any)
-	if !ok {
-		return nil, fmt.Errorf("reconstruct: document root is not an object (got %T)", cur)
-	}
-	return m, nil
+	return cur, nil
 }
 
 func applyChange(root any, ch changelog.Change) (any, error) {
@@ -35,8 +47,13 @@ func applyChange(root any, ch changelog.Change) (any, error) {
 	if len(segs) == 0 {
 		return nil, fmt.Errorf("empty path")
 	}
-	if ch.Kind == KindDelete {
+	switch ch.Kind {
+	case KindDelete:
 		return deleteIn(root, segs), nil
+	case KindCreate, KindPut:
+		// fall through to set below
+	default:
+		return nil, fmt.Errorf("unknown change kind %q", ch.Kind)
 	}
 	var val any
 	if ch.To != "" {
@@ -165,13 +182,78 @@ func lcaPath(paths []string) string {
 	return joinPath(prefix)
 }
 
-// State reconstructs docID's current state at HEAD.
+// State reconstructs docID's current state at HEAD. When the backend exposes
+// both Snapshotter and TailReader (detected in New), it serves from the stored
+// snapshot plus a tail replay instead of refetching the whole history, and
+// refreshes the snapshot afterwards — turning reads on long histories from
+// O(all commits) into O(commits since last read).
 func (k *Kit) State(ctx context.Context, docID string) (map[string]any, error) {
+	if k.snap != nil && k.tail != nil {
+		if st, ok, err := k.snapshotState(ctx, docID); err != nil {
+			return nil, err
+		} else if ok {
+			return st, nil
+		}
+	}
 	commits, err := k.svc.Commits(ctx, docID, 0) // newest-first
 	if err != nil {
 		return nil, err
 	}
-	return Reconstruct(reversed(commits))
+	st, err := Reconstruct(reversed(commits))
+	if err != nil {
+		return nil, err
+	}
+	if k.snap != nil && len(commits) > 0 {
+		k.saveSnapshot(ctx, docID, commits[0].ID, st) // prime the cache
+	}
+	return st, nil
+}
+
+// snapshotState serves State from the stored snapshot plus tail replay.
+// ok=false means "fall back to a full rebuild" (no snapshot, undecodable
+// bytes, an orphaned cursor, or a non-object root after replay) — never an
+// error, because the full history can always answer.
+func (k *Kit) snapshotState(ctx context.Context, docID string) (map[string]any, bool, error) {
+	s, ok, err := k.snap.LoadSnapshot(ctx, docID)
+	if err != nil || !ok {
+		return nil, false, err
+	}
+	var base map[string]any
+	if json.Unmarshal(s.State, &base) != nil || base == nil {
+		return nil, false, nil // corrupt/foreign bytes: rebuild from scratch
+	}
+	tail, err := k.tail.CommitsAfter(ctx, docID, s.CommitID, 0) // oldest-first
+	if errors.Is(err, changelog.ErrNoSuchCommit) {
+		return nil, false, nil // snapshot outlived its commit (doc reset): rebuild
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	if len(tail) == 0 {
+		return base, true, nil
+	}
+	next, err := replayInto(base, tail)
+	if err != nil {
+		return nil, false, err
+	}
+	m, isObj := next.(map[string]any)
+	if !isObj {
+		return nil, false, nil
+	}
+	// ponytail: snapshot refreshed on every read that replayed a tail; add a
+	// commit-count threshold if the upsert traffic ever matters.
+	k.saveSnapshot(ctx, docID, tail[len(tail)-1].ID, m)
+	return m, true, nil
+}
+
+// saveSnapshot marshals and stores state as of commitID, best-effort (like
+// Deduper.MarkSeen: a failure only means a colder next read, never an error).
+func (k *Kit) saveSnapshot(ctx context.Context, docID, commitID string, state map[string]any) {
+	b, err := json.Marshal(state)
+	if err != nil {
+		return
+	}
+	_ = k.snap.SaveSnapshot(ctx, changelog.Snapshot{DocID: docID, CommitID: commitID, State: b})
 }
 
 // StateAt reconstructs docID's state as of (and including) commitID. An empty

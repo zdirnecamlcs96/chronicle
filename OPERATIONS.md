@@ -59,6 +59,34 @@ parts, so:
 logical row only *after* a merge. Between insert and merge, a non-`FINAL` reader
 would see duplicates — always read with `FINAL` (the adapter does).
 
+## Pruning the `seen` table
+
+Idempotency records (`seen`) have **no automatic TTL** — they grow until pruned.
+Cron the adapter's `PruneSeen` with a retention **longer than your producer's
+maximum redelivery window** (a pruned key makes a very late replay seal a
+duplicate commit):
+
+```go
+// e.g. daily: drop keys older than 30 days
+n, err := sqlLog.PruneSeen(ctx, time.Now().AddDate(0, 0, -30)) // MySQL: returns rows deleted
+err = chLog.PruneSeen(ctx, time.Now().AddDate(0, 0, -30))      // ClickHouse: async lightweight delete, no count
+```
+
+On ClickHouse, a native `TTL` clause on the `seen` table is the alternative for
+fresh installs; `PruneSeen` covers existing deployments.
+
+## Snapshots (read cache)
+
+The `snapshots` table (SQL and ClickHouse) is a **pure cache**: one row per
+document — the kit's materialized state at some commit, refreshed lazily on
+read. It is never the source of truth:
+
+- `TRUNCATE snapshots` is always safe; the next read falls back to a full
+  replay and re-primes the cache.
+- Restores may ignore it entirely.
+- MySQL caps a snapshot at `MEDIUMBLOB` (16 MB); documents whose materialized
+  state exceeds that should not be snapshotted.
+
 ## Migrations
 
 `Migrate(ctx)` runs `CREATE TABLE IF NOT EXISTS` and is **idempotent** — safe to

@@ -41,7 +41,7 @@ func TestClickHouseLog_Conformance(t *testing.T) {
 		if err := l.Migrate(context.Background()); err != nil {
 			t.Fatalf("migrate: %v", err)
 		}
-		for _, tbl := range []string{"commits", "seen"} {
+		for _, tbl := range []string{"commits", "seen", "snapshots"} {
 			if _, err := db.Exec("TRUNCATE TABLE IF EXISTS " + tbl); err != nil {
 				t.Fatalf("truncate %s: %v", tbl, err)
 			}
@@ -51,4 +51,6 @@ func TestClickHouseLog_Conformance(t *testing.T) {
 
 	conformance.RunLogConformance(t, newLog)
 	conformance.RunDeduperConformance(t, newLog)
+	conformance.RunTailReaderConformance(t, newLog)
+	conformance.RunSnapshotterConformance(t, newLog)
 }

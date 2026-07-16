@@ -9,19 +9,30 @@ import (
 	changelog "github.com/zdirnecamlcs96/chronicle/core"
 )
 
-// memLog is a minimal in-memory Log+Indexer+Deduper for kit tests, so the kit's
-// module depends on core only (not on an adapter). Mirrors core's own test stub.
+// memLog is a minimal in-memory Log+Indexer+Deduper+TailReader+Snapshotter for
+// kit tests, so the kit's module depends on core only (not on an adapter).
+// Mirrors core's own test stub, plus call counters for the snapshot fast-path
+// tests.
 type memLog struct {
 	mu      sync.Mutex
 	commits map[string][]changelog.Commit
 	seen    map[[2]string]changelog.Commit
+	snaps   map[string]changelog.Snapshot
+
+	commitsCalls int // full-history Commits reads
+	afterCalls   int // cursor CommitsAfter reads
+}
+
+func newMemLog() *memLog {
+	return &memLog{
+		commits: map[string][]changelog.Commit{},
+		seen:    map[[2]string]changelog.Commit{},
+		snaps:   map[string]changelog.Snapshot{},
+	}
 }
 
 func newMemService() changelog.Service {
-	return changelog.NewService(&memLog{
-		commits: map[string][]changelog.Commit{},
-		seen:    map[[2]string]changelog.Commit{},
-	})
+	return changelog.NewService(newMemLog())
 }
 
 func (m *memLog) AppendCommit(ctx context.Context, docID string, c changelog.Commit) error {
@@ -40,6 +51,7 @@ func (m *memLog) Commits(ctx context.Context, docID string, limit int) ([]change
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.commitsCalls++
 	src := m.commits[docID]
 	out := make([]changelog.Commit, 0, len(src))
 	for i := len(src) - 1; i >= 0; i-- {
@@ -125,6 +137,66 @@ func (m *memLog) MarkSeen(ctx context.Context, docID, key string, c changelog.Co
 		m.seen[k] = c
 	}
 	return nil
+}
+
+func (m *memLog) CommitsAfter(ctx context.Context, docID, afterID string, limit int) ([]changelog.Commit, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.afterCalls++
+	src := m.commits[docID]
+	start := 0
+	if afterID != "" {
+		start = -1
+		for i, c := range src {
+			if c.ID == afterID {
+				start = i + 1
+				break
+			}
+		}
+		if start < 0 {
+			return nil, changelog.ErrNoSuchCommit
+		}
+	}
+	tail := src[start:]
+	if limit > 0 && len(tail) > limit {
+		tail = tail[:limit]
+	}
+	return append([]changelog.Commit(nil), tail...), nil
+}
+
+func (m *memLog) SaveSnapshot(ctx context.Context, s changelog.Snapshot) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.State = append([]byte(nil), s.State...)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.snaps[s.DocID] = s
+	return nil
+}
+
+func (m *memLog) LoadSnapshot(ctx context.Context, docID string) (changelog.Snapshot, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return changelog.Snapshot{}, false, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s, ok := m.snaps[docID]
+	if !ok {
+		return changelog.Snapshot{}, false, nil
+	}
+	s.State = append([]byte(nil), s.State...)
+	return s, true, nil
+}
+
+// counters returns a consistent view of the read counters.
+func (m *memLog) counters() (commitsCalls, afterCalls int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.commitsCalls, m.afterCalls
 }
 
 // norm JSON-normalizes v for comparison with reconstructed/snapshot values.

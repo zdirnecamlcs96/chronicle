@@ -72,6 +72,17 @@ func RunLogConformance(t *testing.T, newLog NewLog) {
 		}
 	})
 
+	t.Run("ChainVerifies", func(t *testing.T) {
+		// The stored chain must survive a full hash re-verification — proving the
+		// backend round-trips commits losslessly (parent, message, changes).
+		log, done := newLog(t)
+		defer done()
+		sealN(t, log, "doc", 3)
+		if err := changelog.Verify(context.Background(), log, "doc"); err != nil {
+			t.Fatalf("Verify over stored chain: %v", err)
+		}
+	})
+
 	t.Run("CommitsNewestFirst", func(t *testing.T) {
 		log, done := newLog(t)
 		defer done()
@@ -233,6 +244,188 @@ func RunDeduperConformance(t *testing.T, newLog NewLog) {
 	if got, ok, _ := d.Seen(ctx, "docB", "k"); !ok || got.ID != b.ID {
 		t.Fatalf("docB Seen: got=%q ok=%v, want %q", got.ID, ok, b.ID)
 	}
+}
+
+// RunTailReaderConformance is the opt-in contract for backends that implement
+// changelog.TailReader: CommitsAfter returns the commits strictly after a
+// cursor, OLDEST first (replay order), with "" meaning from the root, an
+// unknown or foreign cursor failing with ErrNoSuchCommit, and limit honored.
+func RunTailReaderConformance(t *testing.T, newLog NewLog) {
+	t.Helper()
+
+	tail := func(t *testing.T, log changelog.Log) changelog.TailReader {
+		t.Helper()
+		tr, ok := log.(changelog.TailReader)
+		if !ok {
+			t.Skip("backend does not implement changelog.TailReader")
+		}
+		return tr
+	}
+
+	t.Run("FromRootOldestFirst", func(t *testing.T) {
+		log, done := newLog(t)
+		defer done()
+		cs := sealN(t, log, "doc", 4)
+		got, err := tail(t, log).CommitsAfter(context.Background(), "doc", "", 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertIDs(t, got, cs[0].ID, cs[1].ID, cs[2].ID, cs[3].ID)
+	})
+
+	t.Run("AfterMidCursor", func(t *testing.T) {
+		log, done := newLog(t)
+		defer done()
+		cs := sealN(t, log, "doc", 4)
+		got, err := tail(t, log).CommitsAfter(context.Background(), "doc", cs[1].ID, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertIDs(t, got, cs[2].ID, cs[3].ID)
+	})
+
+	t.Run("Limit", func(t *testing.T) {
+		log, done := newLog(t)
+		defer done()
+		cs := sealN(t, log, "doc", 4)
+		got, err := tail(t, log).CommitsAfter(context.Background(), "doc", cs[0].ID, 2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertIDs(t, got, cs[1].ID, cs[2].ID)
+	})
+
+	t.Run("AfterHeadEmpty", func(t *testing.T) {
+		log, done := newLog(t)
+		defer done()
+		cs := sealN(t, log, "doc", 2)
+		got, err := tail(t, log).CommitsAfter(context.Background(), "doc", cs[1].ID, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 0 {
+			t.Fatalf("after head = %d commits, want 0", len(got))
+		}
+	})
+
+	t.Run("UnknownCursor", func(t *testing.T) {
+		log, done := newLog(t)
+		defer done()
+		sealN(t, log, "doc", 1)
+		if _, err := tail(t, log).CommitsAfter(context.Background(), "doc", "nope", 0); !errors.Is(err, changelog.ErrNoSuchCommit) {
+			t.Fatalf("unknown cursor: %v, want ErrNoSuchCommit", err)
+		}
+	})
+
+	t.Run("CrossDocCursor", func(t *testing.T) {
+		log, done := newLog(t)
+		defer done()
+		// docA gets TWO commits: identical root content on two documents yields
+		// the SAME content-addressed ID, so only a[1] (chained past docA's root)
+		// is guaranteed absent from docB.
+		a := sealN(t, log, "docA", 2)
+		sealN(t, log, "docB", 1)
+		if _, err := tail(t, log).CommitsAfter(context.Background(), "docB", a[1].ID, 0); !errors.Is(err, changelog.ErrNoSuchCommit) {
+			t.Fatalf("docA cursor on docB: %v, want ErrNoSuchCommit", err)
+		}
+	})
+
+	t.Run("ContextCancellation", func(t *testing.T) {
+		log, done := newLog(t)
+		defer done()
+		tr := tail(t, log)
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if _, err := tr.CommitsAfter(ctx, "doc", "", 0); !errors.Is(err, context.Canceled) {
+			t.Fatalf("CommitsAfter: want context.Canceled, got %v", err)
+		}
+	})
+}
+
+// RunSnapshotterConformance is the opt-in contract for backends that implement
+// changelog.Snapshotter: one snapshot per document, latest write wins, bytes
+// round-trip untouched, documents isolated.
+func RunSnapshotterConformance(t *testing.T, newLog NewLog) {
+	t.Helper()
+
+	snap := func(t *testing.T, log changelog.Log) changelog.Snapshotter {
+		t.Helper()
+		s, ok := log.(changelog.Snapshotter)
+		if !ok {
+			t.Skip("backend does not implement changelog.Snapshotter")
+		}
+		return s
+	}
+
+	t.Run("AbsentIsNotOK", func(t *testing.T) {
+		log, done := newLog(t)
+		defer done()
+		if _, ok, err := snap(t, log).LoadSnapshot(context.Background(), "missing"); err != nil || ok {
+			t.Fatalf("absent snapshot: ok=%v err=%v, want false/nil", ok, err)
+		}
+	})
+
+	t.Run("RoundTrip", func(t *testing.T) {
+		log, done := newLog(t)
+		defer done()
+		s := snap(t, log)
+		ctx := context.Background()
+		in := changelog.Snapshot{DocID: "doc", CommitID: "c1", State: []byte(`{"a":1}`)}
+		if err := s.SaveSnapshot(ctx, in); err != nil {
+			t.Fatalf("SaveSnapshot: %v", err)
+		}
+		got, ok, err := s.LoadSnapshot(ctx, "doc")
+		if err != nil || !ok {
+			t.Fatalf("LoadSnapshot: ok=%v err=%v", ok, err)
+		}
+		if got.DocID != in.DocID || got.CommitID != in.CommitID || string(got.State) != string(in.State) {
+			t.Fatalf("round-trip: got %+v, want %+v", got, in)
+		}
+	})
+
+	t.Run("LatestWins", func(t *testing.T) {
+		log, done := newLog(t)
+		defer done()
+		s := snap(t, log)
+		ctx := context.Background()
+		if err := s.SaveSnapshot(ctx, changelog.Snapshot{DocID: "doc", CommitID: "c1", State: []byte("old")}); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SaveSnapshot(ctx, changelog.Snapshot{DocID: "doc", CommitID: "c2", State: []byte("new")}); err != nil {
+			t.Fatal(err)
+		}
+		got, ok, err := s.LoadSnapshot(ctx, "doc")
+		if err != nil || !ok || got.CommitID != "c2" || string(got.State) != "new" {
+			t.Fatalf("latest-wins: got %+v ok=%v err=%v, want c2/new", got, ok, err)
+		}
+	})
+
+	t.Run("PerDocIsolation", func(t *testing.T) {
+		log, done := newLog(t)
+		defer done()
+		s := snap(t, log)
+		ctx := context.Background()
+		if err := s.SaveSnapshot(ctx, changelog.Snapshot{DocID: "docA", CommitID: "ca", State: []byte("A")}); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok, _ := s.LoadSnapshot(ctx, "docB"); ok {
+			t.Fatal("docB resolved docA's snapshot")
+		}
+	})
+
+	t.Run("ContextCancellation", func(t *testing.T) {
+		log, done := newLog(t)
+		defer done()
+		s := snap(t, log)
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if err := s.SaveSnapshot(ctx, changelog.Snapshot{DocID: "doc"}); !errors.Is(err, context.Canceled) {
+			t.Fatalf("SaveSnapshot: want context.Canceled, got %v", err)
+		}
+		if _, _, err := s.LoadSnapshot(ctx, "doc"); !errors.Is(err, context.Canceled) {
+			t.Fatalf("LoadSnapshot: want context.Canceled, got %v", err)
+		}
+	})
 }
 
 // sealN seals n chained commits into log via a Recorder with a MONOTONIC clock,

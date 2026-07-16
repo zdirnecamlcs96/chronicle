@@ -100,11 +100,11 @@ func toPointer(p string) string {
 }
 
 // fromPointer converts an RFC 6901 JSON Pointer to a kit dotted path, unescaping
-// "~1"→"/" then "~0"→"~" (order matters per RFC 6901).
+// "~1"→"/" then "~0"→"~" (order matters per RFC 6901). Keys containing "." are
+// re-escaped by joinPath, so they round-trip.
 //
-// Limitation: the kit's dotted grammar cannot represent an object key that itself
-// contains "." (it would split into two segments), nor the empty-string key. Such
-// keys do not round-trip; avoid them, or address those documents by Change.Path
+// Limitation: a root-level empty-string key ("/") maps to the kit's root path ""
+// and does not round-trip; avoid it, or address such documents by Change.Path
 // directly rather than via JSON Patch.
 func fromPointer(p string) string {
 	if p == "" {
@@ -117,5 +117,5 @@ func fromPointer(p string) string {
 		s = strings.ReplaceAll(s, "~0", "~")
 		segs[i] = s
 	}
-	return strings.Join(segs, ".")
+	return joinPath(segs)
 }

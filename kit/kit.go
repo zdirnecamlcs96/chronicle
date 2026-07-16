@@ -11,10 +11,45 @@ import (
 // injects the Service (and thus picks the backend).
 type Kit struct {
 	svc changelog.Service
+
+	// Optional backend capabilities discovered in New; both nil is fine and
+	// simply means State reads by full replay.
+	snap changelog.Snapshotter
+	tail changelog.TailReader
 }
 
-// New returns a Kit over svc.
-func New(svc changelog.Service) *Kit { return &Kit{svc: svc} }
+// New returns a Kit over svc. It detects the backend's optional Snapshotter
+// and TailReader capabilities by walking the Unwrap() chain from the Service
+// down through its Log (the same discovery NewService uses); a Service that
+// exposes no Unwrap simply gets full-replay reads.
+func New(svc changelog.Service) *Kit {
+	k := &Kit{svc: svc}
+	var l changelog.Log
+	if u, ok := svc.(interface{ Unwrap() changelog.Log }); ok {
+		l = u.Unwrap()
+	}
+	for l != nil {
+		if k.snap == nil {
+			if s, ok := l.(changelog.Snapshotter); ok {
+				k.snap = s
+			}
+		}
+		if k.tail == nil {
+			if tr, ok := l.(changelog.TailReader); ok {
+				k.tail = tr
+			}
+		}
+		if k.snap != nil && k.tail != nil {
+			break
+		}
+		u, ok := l.(interface{ Unwrap() changelog.Log })
+		if !ok {
+			break
+		}
+		l = u.Unwrap()
+	}
+	return k
+}
 
 // Service returns the underlying Service (for reads the Kit does not wrap).
 func (k *Kit) Service() changelog.Service { return k.svc }

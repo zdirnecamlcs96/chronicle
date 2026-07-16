@@ -41,7 +41,7 @@ flowchart TB
         REC["Recorder<br/>Append(Change) → Commit()"]
         SVC["Service facade<br/>Seal · Commits · AllCommits · Get"]
         PORT{{"Log port<br/>AppendCommit · Commits · Head"}}
-        CAP["optional capabilities<br/>Indexer · Deduper"]
+        CAP["optional capabilities<br/>Indexer · Deduper · TailReader · Snapshotter"]
         REC --> PORT
         SVC --> PORT
         PORT -.-> CAP
@@ -55,7 +55,7 @@ flowchart TB
 
     DBA[("MySQL")]
     DBB[("ClickHouse")]
-    CONF["core/conformance<br/>RunLogConformance · RunSerializableAppend · RunDeduperConformance"]
+    CONF["core/conformance<br/>RunLogConformance · RunSerializableAppend · RunDeduperConformance · RunTailReaderConformance · RunSnapshotterConformance"]
 
     APP -->|in-process: Recorder| REC
     APP -->|in-process: facade| SVC
@@ -128,7 +128,7 @@ type Log interface {
 }
 ```
 
-Two **optional** capability interfaces a backend may also implement
+Four **optional** capability interfaces a backend may also implement
 (`core/capability.go`); detect with a type assertion:
 
 ```go
@@ -140,12 +140,20 @@ type Deduper interface { // producer idempotency (keys scoped per document)
     Seen(ctx context.Context, docID, key string) (Commit, bool, error)
     MarkSeen(ctx context.Context, docID, key string, c Commit) error
 }
+type TailReader interface { // cursor reads: commits strictly after afterID, oldest-first
+    CommitsAfter(ctx context.Context, docID, afterID string, limit int) ([]Commit, error)
+}
+type Snapshotter interface { // one cached, opaque snapshot per document (latest wins)
+    SaveSnapshot(ctx context.Context, s Snapshot) error
+    LoadSnapshot(ctx context.Context, docID string) (s Snapshot, ok bool, err error)
+}
 ```
 
-All three shipped adapters implement `Log` + `Indexer` + `Deduper`: `adapters/sql`
-and `adapters/clickhouse` durably (surviving a restart), `adapters/memory` in
-process. The `Service` keeps no fallback of its own — a `Log` that implements
-neither capability simply has no cross-document queries and no dedup.
+All three shipped adapters implement `Log` + all four capabilities:
+`adapters/sql` and `adapters/clickhouse` durably (surviving a restart),
+`adapters/memory` in process. The `Service` keeps no fallback of its own — a
+`Log` that implements no capability simply has no cross-document queries and no
+dedup, and the kit falls back to full-replay reads.
 
 ## Backends
 

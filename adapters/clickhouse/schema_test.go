@@ -21,4 +21,10 @@ func TestDDL_ReplacingMergeTreeDedup(t *testing.T) {
 	if !strings.Contains(seenDDL, "ORDER BY (doc_id, idempotency_key)") {
 		t.Error("seen dedup identity is (doc_id, idempotency_key): keys are scoped per document")
 	}
+	if !strings.Contains(snapshotsDDL, "ReplacingMergeTree(at)") {
+		t.Error("snapshots must version on at for latest-wins dedup")
+	}
+	if !strings.Contains(snapshotsDDL, "ORDER BY (doc_id)") {
+		t.Error("snapshots ORDER BY key defines the dedup identity (doc_id): one snapshot per document")
+	}
 }

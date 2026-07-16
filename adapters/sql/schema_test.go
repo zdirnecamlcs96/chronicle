@@ -22,6 +22,8 @@ func TestDDL_EncodesCorrectnessConstraints(t *testing.T) {
 		"KEY idx_id (id)",                           // keeps FindByID fast despite non-leftmost id
 		"CREATE TABLE IF NOT EXISTS seen",           // durable idempotency
 		"PRIMARY KEY (doc_id, idempotency_key)",     // idempotency keys are scoped per document
+		"CREATE TABLE IF NOT EXISTS snapshots",      // durable snapshot cache
+		"PRIMARY KEY (doc_id)",                      // one snapshot per document, latest wins
 	} {
 		if !strings.Contains(ddl, want) {
 			t.Errorf("ddl is missing the constraint %q", want)
