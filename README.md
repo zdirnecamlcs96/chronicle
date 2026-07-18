@@ -15,7 +15,9 @@ carry their own driver dependency in their own `go.mod`.
 
 **Mental model:** it's intentionally git-shaped — stage edits, seal them into a
 content-addressed commit hash-chained to its parent, per-document branches. See
-**[the git model](core/MODEL.md)** for a side-by-side with git.
+**[the git model](core/MODEL.md)** for a side-by-side with git, and
+**[CONCEPTS.md](CONCEPTS.md)** for the patterns and algorithms underneath (hash
+chain, event sourcing, snapshotting, anchor verification, …).
 
 ## Status & stability
 
