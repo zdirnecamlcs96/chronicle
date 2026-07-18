@@ -64,6 +64,135 @@ func TestState_SnapshotFastPath(t *testing.T) {
 	}
 }
 
+func TestStateAt_SnapshotFastPath(t *testing.T) {
+	ctx := context.Background()
+	log := newMemLog()
+	k := New(changelog.NewService(log))
+
+	c1, err := k.RecordChanges(ctx, "doc", []changelog.Change{put("a", "1")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Prime the snapshot at c1 (HEAD), then grow the history past it.
+	if _, err := k.State(ctx, "doc"); err != nil {
+		t.Fatal(err)
+	}
+	c2, err := k.RecordChanges(ctx, "doc", []changelog.Change{put("b", "2")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := k.RecordChanges(ctx, "doc", []changelog.Change{put("b", "3")}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Target after the snapshot: must ride the cursor, not full history.
+	got, err := k.StateAt(ctx, "doc", c2.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	commitsCalls, afterCalls := log.counters()
+	if commitsCalls != 1 || afterCalls == 0 {
+		t.Fatalf("StateAt: commitsCalls=%d afterCalls=%d, want 1/>0", commitsCalls, afterCalls)
+	}
+	// Historical read must not move the HEAD snapshot cache backwards.
+	if log.snaps["doc"].CommitID != c1.ID {
+		t.Fatalf("StateAt moved the snapshot to %q, want untouched %q", log.snaps["doc"].CommitID, c1.ID)
+	}
+
+	// Target AT the snapshot commit: served straight from the decoded base.
+	atSnap, err := k.StateAt(ctx, "doc", c1.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c, _ := log.counters(); c != 1 {
+		t.Fatalf("StateAt(snapshot commit): commitsCalls=%d, want 1", c)
+	}
+
+	// Both must be byte-identical to a capability-blind full replay.
+	blind := New(opaqueService{changelog.NewService(log)})
+	want2, err := blind.StateAt(ctx, "doc", c2.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, want2) {
+		t.Fatalf("fast path %#v != full replay %#v", got, want2)
+	}
+	want1, err := blind.StateAt(ctx, "doc", c1.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(atSnap, want1) {
+		t.Fatalf("fast path at snapshot %#v != full replay %#v", atSnap, want1)
+	}
+}
+
+func TestStateAt_TargetBeforeSnapshotFallsBack(t *testing.T) {
+	ctx := context.Background()
+	log := newMemLog()
+	k := New(changelog.NewService(log))
+
+	c1, err := k.RecordChanges(ctx, "doc", []changelog.Change{put("a", "1")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := k.RecordChanges(ctx, "doc", []changelog.Change{put("a", "2")}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := k.State(ctx, "doc"); err != nil { // snapshot at HEAD (c2)
+		t.Fatal(err)
+	}
+	// c1 predates the snapshot: the probe misses and the full path answers.
+	st, err := k.StateAt(ctx, "doc", c1.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st["a"] != float64(1) {
+		t.Fatalf("state = %#v, want a=1", st)
+	}
+	// Unknown commits still error even when a snapshot exists.
+	if _, err := k.StateAt(ctx, "doc", "nonexistent"); err == nil {
+		t.Fatal("unknown commit id must error, not return HEAD state")
+	}
+}
+
+func TestCommitSnapshot_SnapshotFastPath(t *testing.T) {
+	ctx := context.Background()
+	log := newMemLog()
+	k := New(changelog.NewService(log))
+
+	if _, err := k.RecordChanges(ctx, "doc", []changelog.Change{
+		put("items.k1.qty", "1"), put("items.k1.price", "2"), put("status", `"open"`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := k.State(ctx, "doc"); err != nil { // prime snapshot at c1
+		t.Fatal(err)
+	}
+	c2, err := k.RecordChanges(ctx, "doc", []changelog.Change{
+		put("items.k1.qty", "5"), put("items.k1.price", "9"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := k.CommitSnapshot(ctx, "doc", c2.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	commitsCalls, afterCalls := log.counters()
+	if commitsCalls != 1 || afterCalls == 0 {
+		t.Fatalf("CommitSnapshot: commitsCalls=%d afterCalls=%d, want 1/>0", commitsCalls, afterCalls)
+	}
+	blind := New(opaqueService{changelog.NewService(log)})
+	want, err := blind.CommitSnapshot(ctx, "doc", c2.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("fast path %#v != full replay %#v", got, want)
+	}
+}
+
 func TestState_CorruptSnapshotSelfHeals(t *testing.T) {
 	ctx := context.Background()
 	log := newMemLog()

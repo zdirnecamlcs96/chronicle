@@ -128,8 +128,36 @@ func (m *memLog) MarkSeen(ctx context.Context, docID, key string, c Commit) erro
 	return nil
 }
 
+func (m *memLog) CommitsAfter(ctx context.Context, docID, afterID string, limit int) ([]Commit, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	src := m.commits[docID]
+	start := 0
+	if afterID != "" {
+		start = -1
+		for i, c := range src {
+			if c.ID == afterID {
+				start = i + 1
+				break
+			}
+		}
+		if start < 0 {
+			return nil, ErrNoSuchCommit
+		}
+	}
+	tail := src[start:]
+	if limit > 0 && len(tail) > limit {
+		tail = tail[:limit]
+	}
+	return append([]Commit(nil), tail...), nil
+}
+
 var (
-	_ Log     = (*memLog)(nil)
-	_ Indexer = (*memLog)(nil)
-	_ Deduper = (*memLog)(nil)
+	_ Log        = (*memLog)(nil)
+	_ Indexer    = (*memLog)(nil)
+	_ Deduper    = (*memLog)(nil)
+	_ TailReader = (*memLog)(nil)
 )

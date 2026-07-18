@@ -30,6 +30,16 @@ published as per-module Go tags: `core/vX.Y.Z`, `adapters/memory/vX.Y.Z`,
 - **`kit`**: backslash escaping in the dotted path grammar (`\.` = literal dot,
   `\\` = literal backslash) — object keys containing "." now survive
   Diff → seal → State and JSON-Pointer round-trips.
+- **`core`**: incremental verification — `VerifyChainAfter(anchorID, tail)` /
+  `VerifyAfter(ctx, log, docID, anchorID)` verify only the commits after a
+  previously verified anchor via `TailReader`, O(commits since anchor) instead
+  of O(all commits). `VerifyAfter` returns the new verified head to persist as
+  the next anchor; tampering at or before a trusted anchor is by contract
+  invisible (run a full `Verify` when the anchor's provenance is in doubt).
+- **`kit`**: `StateAt` and `CommitSnapshot` use the snapshot + tail fast path
+  when the target commit is at or after the stored snapshot — recent-history
+  time-travel reads become O(commits since snapshot). Older targets fall back
+  to full replay; historical reads never move the snapshot cache.
 
 ### Changed
 - **`core`**: `Service.Seal` retries on `ErrParentConflict` now back off with

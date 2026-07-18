@@ -63,3 +63,61 @@ func Verify(ctx context.Context, log Log, docID string) error {
 	}
 	return VerifyChain(commits)
 }
+
+// VerifyChainAfter checks that tail — the commits strictly after a trusted
+// anchor commit, OLDEST first (as TailReader.CommitsAfter returns them) —
+// extends anchorID as one tamper-free linear chain. anchorID "" means tail is
+// the full history from the root. An empty tail is valid.
+//
+// Because each commit's ID is the content hash of (Parent, Message, Changes)
+// and Parent is inside that hash, a verified anchor transitively attests every
+// commit behind it: re-checking the prefix adds nothing. The flip side is the
+// trust contract — tampering AT OR BEFORE the anchor is invisible here; run a
+// full VerifyChain when the anchor's provenance is itself in doubt.
+func VerifyChainAfter(anchorID string, tail []Commit) error {
+	seenParent := make(map[string]bool, len(tail))
+	prev := anchorID
+	for pos, c := range tail {
+		if seenParent[c.Parent] {
+			return fmt.Errorf("%w: commit %d (%s) repeats parent %q", ErrFork, pos, c.ID, c.Parent)
+		}
+		seenParent[c.Parent] = true
+		if c.Parent != prev {
+			return fmt.Errorf("%w: commit %d (%s) has parent %q, want %q", ErrBrokenChain, pos, c.ID, c.Parent, prev)
+		}
+		id, err := computeID(c.Parent, c.Message, c.Changes)
+		if err != nil {
+			return err
+		}
+		if id != c.ID {
+			return fmt.Errorf("%w: commit %d claims %s", ErrHashMismatch, pos, c.ID)
+		}
+		prev = c.ID
+	}
+	return nil
+}
+
+// VerifyAfter incrementally verifies docID: it fetches only the commits after
+// anchorID via the log's TailReader and runs VerifyChainAfter — O(commits
+// since the anchor) instead of O(all commits). It returns the new verified
+// head (anchorID itself when the tail is empty), which the caller persists as
+// the anchor for the next run. anchorID "" verifies from the root. A log
+// without TailReader, or an anchorID no longer on the document
+// (ErrNoSuchCommit — the history was rewritten under the anchor), is an error.
+func VerifyAfter(ctx context.Context, log Log, docID, anchorID string) (head string, err error) {
+	tr, ok := log.(TailReader)
+	if !ok {
+		return "", errors.New("changelog: incremental verify requires a Log with TailReader")
+	}
+	tail, err := tr.CommitsAfter(ctx, docID, anchorID, 0)
+	if err != nil {
+		return "", err
+	}
+	if err := VerifyChainAfter(anchorID, tail); err != nil {
+		return "", err
+	}
+	if len(tail) == 0 {
+		return anchorID, nil
+	}
+	return tail[len(tail)-1].ID, nil
+}

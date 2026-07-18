@@ -209,20 +209,30 @@ func (k *Kit) State(ctx context.Context, docID string) (map[string]any, error) {
 	return st, nil
 }
 
+// loadBase loads and decodes docID's stored snapshot. ok=false means "no
+// usable snapshot" (none stored, or corrupt/foreign bytes) — the caller falls
+// back to a full rebuild.
+func (k *Kit) loadBase(ctx context.Context, docID string) (base map[string]any, commitID string, ok bool, err error) {
+	s, ok, err := k.snap.LoadSnapshot(ctx, docID)
+	if err != nil || !ok {
+		return nil, "", false, err
+	}
+	if json.Unmarshal(s.State, &base) != nil || base == nil {
+		return nil, "", false, nil
+	}
+	return base, s.CommitID, true, nil
+}
+
 // snapshotState serves State from the stored snapshot plus tail replay.
 // ok=false means "fall back to a full rebuild" (no snapshot, undecodable
 // bytes, an orphaned cursor, or a non-object root after replay) — never an
 // error, because the full history can always answer.
 func (k *Kit) snapshotState(ctx context.Context, docID string) (map[string]any, bool, error) {
-	s, ok, err := k.snap.LoadSnapshot(ctx, docID)
+	base, snapID, ok, err := k.loadBase(ctx, docID)
 	if err != nil || !ok {
 		return nil, false, err
 	}
-	var base map[string]any
-	if json.Unmarshal(s.State, &base) != nil || base == nil {
-		return nil, false, nil // corrupt/foreign bytes: rebuild from scratch
-	}
-	tail, err := k.tail.CommitsAfter(ctx, docID, s.CommitID, 0) // oldest-first
+	tail, err := k.tail.CommitsAfter(ctx, docID, snapID, 0) // oldest-first
 	if errors.Is(err, changelog.ErrNoSuchCommit) {
 		return nil, false, nil // snapshot outlived its commit (doc reset): rebuild
 	}
@@ -258,12 +268,59 @@ func (k *Kit) saveSnapshot(ctx context.Context, docID, commitID string, state ma
 
 // StateAt reconstructs docID's state as of (and including) commitID. An empty
 // commitID yields the empty document (the state before the root commit).
+// When the backend exposes Snapshotter+TailReader and commitID is at or after
+// the stored snapshot, it replays only the tail — O(commits since snapshot);
+// older targets fall back to a full replay.
 func (k *Kit) StateAt(ctx context.Context, docID, commitID string) (map[string]any, error) {
+	if commitID != "" && k.snap != nil && k.tail != nil {
+		if st, ok, err := k.snapshotStateAt(ctx, docID, commitID); err != nil {
+			return nil, err
+		} else if ok {
+			return st, nil
+		}
+	}
 	commits, err := k.svc.Commits(ctx, docID, 0)
 	if err != nil {
 		return nil, err
 	}
 	return stateUpTo(commits, commitID)
+}
+
+// snapshotStateAt serves StateAt from the stored snapshot plus a partial tail
+// replay. ok=false means "fall back to a full rebuild" — no usable snapshot,
+// an orphaned cursor, or commitID not in the tail (older than the snapshot, or
+// not on the document at all; the full path tells those apart). It NEVER
+// refreshes the snapshot: a historical read must not move the HEAD cache.
+func (k *Kit) snapshotStateAt(ctx context.Context, docID, commitID string) (map[string]any, bool, error) {
+	base, snapID, ok, err := k.loadBase(ctx, docID)
+	if err != nil || !ok {
+		return nil, false, err
+	}
+	if snapID == commitID {
+		return base, true, nil
+	}
+	tail, err := k.tail.CommitsAfter(ctx, docID, snapID, 0) // oldest-first
+	if errors.Is(err, changelog.ErrNoSuchCommit) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	for i := range tail {
+		if tail[i].ID != commitID {
+			continue
+		}
+		next, err := replayInto(base, tail[:i+1])
+		if err != nil {
+			return nil, false, err
+		}
+		m, isObj := next.(map[string]any)
+		if !isObj {
+			return nil, false, nil
+		}
+		return m, true, nil
+	}
+	return nil, false, nil
 }
 
 // stateUpTo replays commits (given NEWEST-first, as core returns) up to and
@@ -294,6 +351,13 @@ func stateUpTo(commits []changelog.Commit, commitID string) (map[string]any, err
 // or missing in the parent state, it climbs to the enclosing container. When
 // changes scatter (LCA = root) the snapshot is the whole prior document.
 func (k *Kit) CommitSnapshot(ctx context.Context, docID, commitID string) (any, error) {
+	if k.snap != nil && k.tail != nil {
+		if v, ok, err := k.snapshotCommitScope(ctx, docID, commitID); err != nil {
+			return nil, err
+		} else if ok {
+			return v, nil
+		}
+	}
 	commits, err := k.svc.Commits(ctx, docID, 0)
 	if err != nil {
 		return nil, err
@@ -312,6 +376,51 @@ func (k *Kit) CommitSnapshot(ctx context.Context, docID, commitID string) (any, 
 	if err != nil {
 		return nil, err
 	}
+	return lcaScope(before, target), nil
+}
+
+// snapshotCommitScope serves CommitSnapshot from the stored snapshot plus a
+// partial tail replay: the before-state is the snapshot base advanced to the
+// target's parent. ok=false falls back to the full path (no usable snapshot,
+// orphaned cursor, or target at/before the snapshot — its before-state
+// predates the base). Never refreshes the snapshot.
+func (k *Kit) snapshotCommitScope(ctx context.Context, docID, commitID string) (any, bool, error) {
+	base, snapID, ok, err := k.loadBase(ctx, docID)
+	if err != nil || !ok {
+		return nil, false, err
+	}
+	if snapID == commitID {
+		return nil, false, nil
+	}
+	tail, err := k.tail.CommitsAfter(ctx, docID, snapID, 0) // oldest-first
+	if errors.Is(err, changelog.ErrNoSuchCommit) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	for i := range tail {
+		if tail[i].ID != commitID {
+			continue
+		}
+		next, err := replayInto(base, tail[:i])
+		if err != nil {
+			return nil, false, err
+		}
+		before, isObj := next.(map[string]any)
+		if !isObj {
+			return nil, false, nil
+		}
+		return lcaScope(before, &tail[i]), true, nil
+	}
+	return nil, false, nil
+}
+
+// lcaScope returns the LCA-scoped subtree of before for target's changes: the
+// value at the lcaPath of the changed paths, climbing to the nearest enclosing
+// container when that scope is a scalar or absent, and the whole document when
+// the scope reaches the root.
+func lcaScope(before map[string]any, target *changelog.Commit) any {
 	paths := make([]string, len(target.Changes))
 	for i, c := range target.Changes {
 		paths[i] = c.Path
@@ -323,9 +432,9 @@ func (k *Kit) CommitSnapshot(ctx context.Context, docID, commitID string) (any, 
 		val, ok = getAt(before, splitPath(scope))
 	}
 	if scope == "" {
-		return before, nil // root → whole prior document
+		return before // root → whole prior document
 	}
-	return val, nil
+	return val
 }
 
 // reversed returns commits in chronological (oldest-first) order. core's Commits
