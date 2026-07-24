@@ -62,10 +62,22 @@ func parentPath(p string) string {
 	return joinPath(segs[:len(segs)-1])
 }
 
-// asIndex reports whether seg is a non-negative array index.
+// maxIndex caps how large an array index a path segment may vivify. setIn grows
+// an []any to idx entries (each ~16 bytes), so an unbounded idx from untrusted
+// input is a memory-exhaustion DoS: one 40-byte change with path "x.1048575"
+// would allocate ~16MB. Segments above the cap are not treated as array indices
+// (they fall through to object keys), so it fails closed without a crash.
+// 1<<16 = 65,536 covers any realistic document array while capping one change's
+// growth to ~1MB.
+// ponytail: per-index cap only. Raise if real arrays exceed 65k, lower for a
+// tighter bound. Aggregate growth across many changes is bounded by the httpapi
+// body limit (maxBody), not here.
+const maxIndex = 1 << 16
+
+// asIndex reports whether seg is a non-negative array index within maxIndex.
 func asIndex(seg string) (int, bool) {
 	n, err := strconv.Atoi(seg)
-	if err != nil || n < 0 {
+	if err != nil || n < 0 || n > maxIndex {
 		return 0, false
 	}
 	return n, true

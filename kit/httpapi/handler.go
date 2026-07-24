@@ -6,12 +6,17 @@ package httpapi
 import (
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"strconv"
 
 	changelog "github.com/zdirnecamlcs96/chronicle/core"
 	chroniclekit "github.com/zdirnecamlcs96/chronicle/kit"
 )
+
+// maxBody caps the accepted request body; a changelog commit is small, so a
+// few MB is generous and stops a multi-GB POST from being buffered into memory.
+const maxBody = 4 << 20
 
 // Handler returns an http.Handler exposing the changelog over svc:
 //
@@ -39,6 +44,7 @@ type postRequest struct {
 }
 
 func postCommits(k *chroniclekit.Kit, w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxBody)
 	var req postRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
@@ -91,7 +97,7 @@ func postCommits(k *chroniclekit.Kit, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		serverError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, commit)
@@ -111,7 +117,7 @@ func toDocCommitResponse(dc changelog.DocCommit) docCommitResponse {
 func getCommit(svc changelog.Service, w http.ResponseWriter, r *http.Request) {
 	dc, ok, err := svc.Get(r.Context(), r.PathValue("id"))
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		serverError(w, err)
 		return
 	}
 	if !ok {
@@ -127,7 +133,7 @@ func listCommits(svc changelog.Service, w http.ResponseWriter, r *http.Request) 
 	if doc == "" {
 		all, err := svc.AllCommits(r.Context(), limit)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			serverError(w, err)
 			return
 		}
 		rows := make([]docCommitResponse, len(all))
@@ -139,7 +145,7 @@ func listCommits(svc changelog.Service, w http.ResponseWriter, r *http.Request) 
 	}
 	cs, err := svc.Commits(r.Context(), doc, limit)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		serverError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, cs)
@@ -160,7 +166,7 @@ func listChanges(svc changelog.Service, w http.ResponseWriter, r *http.Request) 
 	if doc == "" {
 		all, err := svc.AllCommits(r.Context(), limit)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			serverError(w, err)
 			return
 		}
 		for _, dc := range all {
@@ -171,7 +177,7 @@ func listChanges(svc changelog.Service, w http.ResponseWriter, r *http.Request) 
 	} else {
 		cs, err := svc.Commits(r.Context(), doc, limit)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			serverError(w, err)
 			return
 		}
 		for _, c := range cs {
@@ -201,4 +207,11 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
+}
+
+// serverError logs the real error and returns a generic 500 so backend/adapter
+// internals (SQL text, table names, chain internals) are not disclosed to callers.
+func serverError(w http.ResponseWriter, err error) {
+	log.Printf("httpapi: %v", err)
+	writeError(w, http.StatusInternalServerError, "internal error")
 }

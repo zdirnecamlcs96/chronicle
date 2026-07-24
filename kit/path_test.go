@@ -3,6 +3,8 @@ package chroniclekit
 import (
 	"reflect"
 	"testing"
+
+	changelog "github.com/zdirnecamlcs96/chronicle/core"
 )
 
 func TestSplitPath_Escapes(t *testing.T) {
@@ -34,6 +36,26 @@ func TestSplitPath_Escapes(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestAsIndex_CapsHugeIndex(t *testing.T) {
+	// A huge numeric segment must not be treated as an array index, else setIn
+	// would grow an []any to that length (memory-exhaustion DoS).
+	if _, ok := asIndex("2000000000"); ok {
+		t.Fatal("asIndex accepted an index above maxIndex")
+	}
+	if n, ok := asIndex("5"); !ok || n != 5 {
+		t.Fatalf("asIndex(\"5\") = %d,%v; want 5,true", n, ok)
+	}
+	// A poisoned change reconstructs into an object key, not a giant array.
+	root, err := applyChange(map[string]any{}, changelog.Change{Kind: KindPut, Path: "a.2000000000", To: "1"})
+	if err != nil {
+		t.Fatalf("applyChange: %v", err)
+	}
+	a := root.(map[string]any)["a"]
+	if _, isArray := a.([]any); isArray {
+		t.Fatalf("huge index vivified an array; want object key, got %T", a)
 	}
 }
 
