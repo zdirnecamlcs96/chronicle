@@ -226,6 +226,14 @@ Each route maps to a `Service` call; the `Service` owns hashing, parent chaining
 and idempotent dedup (an `idempotency_key` makes at-least-once delivery seal
 exactly one commit). Auth, middleware, TLS, and the client side are yours.
 
+> **Security disclaimer.** chronicle is provided as-is, without warranty. The
+> HTTP layer ships no authentication, authorization, rate limiting, or per-caller
+> quotas — those are the deployer's responsibility. If you seal changes from
+> untrusted producers, validate them: array-index growth on reconstruct is
+> capped per index (`kit`), but aggregate request size is bounded only by the
+> body limit you set. Review it for your own threat model before exposing it to
+> untrusted input.
+
 ## The conformance contract
 
 A new backend is "correct" when it passes the suite — this is what makes the
