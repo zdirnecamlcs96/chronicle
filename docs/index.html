@@ -428,6 +428,12 @@ history, _ := log.<span class="f">Commits</span>(ctx, <span class="s">"invoice-4
       <div class="conf">core/conformance — RunLogConformance · RunSerializableAppend · RunDeduperConformance · RunTailReaderConformance · RunSnapshotterConformance<span>validates every backend above</span></div>
     </div>
   </div>
+  <p class="mapnote">The core stays wire-free. When a Go server wants batteries, the
+  optional <code>kit</code> module layers them on top: state diffing, JSON-Patch
+  conversion, snapshot-backed <code>State</code>/<code>StateAt</code>, and
+  <code>kit/httpapi</code> — a ready-made <code>http.ServeMux</code>
+  (<code>POST /commits</code>, <code>GET /commits</code>, <code>GET /commits/{id}</code>,
+  <code>GET /changes</code>) you mount behind your own auth and middleware.</p>
 </section>
 
 <section id="backends">
