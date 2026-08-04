@@ -159,47 +159,23 @@ pre.code .f{color:#9BB4D8}
 .card p{color:var(--muted);font-size:.88rem;line-height:1.6}
 .card p code{font-size:.82em}
 
-/* ---------- diagrams ---------- */
+/* ---------- diagrams (mermaid) ---------- */
 .diagram{
   background:var(--ink-card);border:1px solid var(--faint);border-radius:10px;
   padding:26px;margin-top:2rem;overflow-x:auto;
 }
-.dg{font-family:var(--mono);font-size:.76rem;line-height:1.5}
-.dg .box{
-  background:var(--ink-raise);border:1px solid #3A4356;border-radius:8px;
-  padding:.7em 1em;text-align:center;color:var(--vellum);
+.diagram pre.mermaid{
+  display:flex;justify-content:center;min-width:560px;
+  color:var(--muted);font-family:var(--mono);font-size:.78rem;
 }
-.dg .box small{display:block;color:var(--muted);font-size:.92em;margin-top:.3em;font-weight:400}
-.dg .g{color:var(--gold)}
-.dg .arrow{text-align:center;color:var(--muted);padding:6px 0 2px;font-size:.72rem}
-.dg .arrow::after{content:"↓";display:block;color:#5A6375;font-size:.95rem;line-height:1.1;margin-top:1px}
-/* git ↔ chronicle side-by-side */
-.duo{display:grid;grid-template-columns:1fr 56px 1fr;align-items:center;min-width:640px}
-.duo .colhead{
-  font-family:var(--display);font-style:italic;font-size:1.05rem;text-align:center;
-  color:var(--vellum);padding-bottom:14px;
+.diagram svg{max-width:100%;height:auto}
+.diagram .cluster rect{rx:12px}
+.diagram .node rect{rx:9px}
+/* flow animation: dashes march along every edge */
+@media(prefers-reduced-motion:no-preference){
+  .diagram .edgePaths path{stroke-dasharray:7 5;animation:flow 1.15s linear infinite}
+  @keyframes flow{to{stroke-dashoffset:-12}}
 }
-.duo .eq{text-align:center;color:var(--gold);opacity:.7}
-.duo .box{align-self:stretch;display:flex;flex-direction:column;justify-content:center}
-/* layered architecture */
-.arch{display:flex;flex-direction:column;min-width:620px}
-.arch .band{border:1px dashed var(--faint);border-radius:10px;padding:14px}
-.arch .bandlab{
-  font-size:.66rem;letter-spacing:.08em;text-transform:uppercase;
-  color:var(--muted);margin-bottom:10px;
-}
-.arch .pair{display:grid;grid-template-columns:1fr 1fr;gap:10px}
-.arch .trio{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px}
-.arch .port{border-color:var(--gold);margin-top:10px}
-.arch .port b{color:var(--gold);font-weight:500}
-.arch .caps{border-style:dashed;margin-top:10px;color:var(--muted)}
-.arch .caps small{margin-top:.15em}
-.arch .db{display:block;color:#A9B2C4;font-style:normal;margin-top:.25em}
-.arch .conf{
-  margin-top:14px;border:1px dashed rgba(95,169,124,.5);border-radius:10px;
-  padding:.75em 1em;text-align:center;font-size:.72rem;color:var(--jade);
-}
-.arch .conf span{display:block;color:var(--muted);margin-top:.2em}
 
 /* ---------- tables ---------- */
 .tablewrap{overflow-x:auto;margin-top:2rem}
@@ -361,31 +337,38 @@ history, _ := log.<span class="f">Commits</span>(ctx, <span class="s">"invoice-4
   logical change always yields the same ID — that's what makes retries dedup to a
   single commit.</p>
   <div class="diagram" role="img" aria-label="Side-by-side mapping: git's working tree, index, commit, and branch history correspond to chronicle's Change, pending buffer, Commit, and per-document Log.">
-    <div class="dg duo">
-      <div class="colhead">git</div><span></span><div class="colhead">chronicle</div>
+<pre class="mermaid">
+flowchart LR
+    subgraph GIT["git"]
+        direction TB
+        G1["working tree&lt;br/&gt;(edits)"]
+        G2["index / staging area"]
+        G3["commit&lt;br/&gt;SHA = hash(tree, parent,&lt;br/&gt;author, time, message)"]
+        G4["branch history&lt;br/&gt;HEAD → parent → …"]
+        G1 -->|git add| G2
+        G2 -->|git commit -m| G3
+        G3 -->|chained onto HEAD| G4
+    end
 
-      <div class="box">working tree<small>(edits)</small></div>
-      <span class="eq">≈</span>
-      <div class="box">Change<small>(one edit)</small></div>
+    subgraph CL["chronicle"]
+        direction TB
+        C1["Change&lt;br/&gt;(one edit)"]
+        C2["pending&lt;br/&gt;(staged)"]
+        C3["Commit&lt;br/&gt;ID = hash(parent, message, changes)&lt;br/&gt;no author, no time"]
+        C4["per-doc history = Log&lt;br/&gt;Head → parent → …"]
+        C1 -->|Recorder.Append| C2
+        C2 -->|"Recorder.Commit(WithMessage)"| C3
+        C3 -->|chained onto Head| C4
+    end
 
-      <div class="arrow">git add</div><span></span><div class="arrow">Recorder.Append</div>
+    G1 -.->|≈| C1
+    G2 -.->|≈| C2
+    G3 -.->|≈| C3
+    G4 -.->|≈| C4
 
-      <div class="box">index / staging area</div>
-      <span class="eq">≈</span>
-      <div class="box">pending<small>(staged)</small></div>
-
-      <div class="arrow">git commit -m</div><span></span><div class="arrow">Recorder.Commit(WithMessage)</div>
-
-      <div class="box">commit<small>SHA = hash(tree, parent,<br>author, time, message)</small></div>
-      <span class="eq">≈</span>
-      <div class="box">Commit<small>ID = hash(parent, message, changes)<br><span class="g">no author, no time</span></small></div>
-
-      <div class="arrow">chained onto HEAD</div><span></span><div class="arrow">chained onto Head</div>
-
-      <div class="box">branch history<small>HEAD → parent → …</small></div>
-      <span class="eq">≈</span>
-      <div class="box">per-doc history = Log<small>Head → parent → …</small></div>
-    </div>
+    classDef seal stroke:#D9A441,stroke-width:1.5px
+    class C3 seal
+</pre>
   </div>
   <p class="mapnote">Two git reflexes that deliberately don't exist here: no
   <code>init</code> (a history begins at its first commit, <code>parent == ""</code>) and no
@@ -400,33 +383,43 @@ history, _ := log.<span class="f">Commits</span>(ctx, <span class="s">"invoice-4
   them, and the commit lands in whatever <code>Log</code> you picked. The conformance suite
   validates every backend against the same contract.</p>
   <div class="diagram" role="img" aria-label="Layers: your app produces changes; the stdlib-only core seals them through the Recorder or Service facade into the 3-method Log port; commits land in the memory, MySQL, or ClickHouse adapter, all validated by the conformance suite.">
-    <div class="dg arch">
-      <div class="band">
-        <div class="bandlab">producers — anything that emits changes</div>
-        <div class="box">your app<small>CRUD handlers · message consumer · state diff</small></div>
-      </div>
-      <div class="arrow">Change — in-process, no wire</div>
-      <div class="band">
-        <div class="bandlab">core — stdlib only · package changelog</div>
-        <div class="pair">
-          <div class="box">Recorder<small>Append(Change) → Commit()</small></div>
-          <div class="box">Service facade<small>Seal · Commits · AllCommits · Get</small></div>
-        </div>
-        <div class="arrow"></div>
-        <div class="box port"><b>Log port</b><small>AppendCommit · Commits · Head</small></div>
-        <div class="box caps">optional capabilities<small>Indexer · Deduper · TailReader · Snapshotter</small></div>
-      </div>
-      <div class="arrow">any Log implementation</div>
-      <div class="band">
-        <div class="bandlab">adapters — optional · pick one, or write your own</div>
-        <div class="trio">
-          <div class="box">adapters/memory<small>in-memory · dev/ref</small></div>
-          <div class="box">adapters/sql<small>transactional · fork-free<i class="db">▸ MySQL</i></small></div>
-          <div class="box">adapters/clickhouse<small>columnar · eventual<i class="db">▸ ClickHouse</i></small></div>
-        </div>
-      </div>
-      <div class="conf">core/conformance — RunLogConformance · RunSerializableAppend · RunDeduperConformance · RunTailReaderConformance · RunSnapshotterConformance<span>validates every backend above</span></div>
-    </div>
+<pre class="mermaid">
+flowchart TB
+    subgraph L1["producers — anything that emits changes"]
+        APP["your app&lt;br/&gt;CRUD handlers · message consumer · state diff"]
+    end
+
+    subgraph L2["core — stdlib only · package changelog"]
+        REC["Recorder&lt;br/&gt;Append(Change) → Commit()"]
+        SVC["Service facade&lt;br/&gt;Seal · Commits · AllCommits · Get"]
+        PORT{{"Log port&lt;br/&gt;AppendCommit · Commits · Head"}}
+        CAP["optional capabilities&lt;br/&gt;Indexer · Deduper · TailReader · Snapshotter"]
+    end
+
+    subgraph L3["adapters — optional · pick one, or write your own"]
+        MEM["adapters/memory&lt;br/&gt;in-memory · dev/ref"]
+        SQL["adapters/sql&lt;br/&gt;MySQL · transactional · fork-free"]
+        CH["adapters/clickhouse&lt;br/&gt;ClickHouse · columnar · eventual"]
+    end
+
+    CONF["core/conformance&lt;br/&gt;RunLogConformance · RunSerializableAppend · …"]
+
+    APP -->|Recorder| REC
+    APP -->|facade| SVC
+    REC --> PORT
+    SVC --> PORT
+    PORT --> MEM
+    PORT --> SQL
+    PORT --> CH
+    MEM -. validated by .-> CONF
+    SQL -. validated by .-> CONF
+    CH -. validated by .-> CONF
+
+    classDef port fill:#1A2130,stroke:#D9A441,stroke-width:1.5px,color:#E9E4D8
+    classDef conf fill:transparent,stroke:#5FA97C,stroke-dasharray:5 4,color:#5FA97C
+    class PORT port
+    class CONF conf
+</pre>
   </div>
   <p class="mapnote">The core stays wire-free. When a Go server wants batteries, the
   optional <code>kit</code> module layers them on top: state diffing, JSON-Patch
@@ -502,5 +495,28 @@ history, _ := log.<span class="f">Commits</span>(ctx, <span class="s">"invoice-4
 
 </div>
 
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11.16.1/dist/mermaid.min.js" integrity="sha384-aBQXj4hK6Jm05i7aQAsUV3bLdSUrHX1BGYfMB0166TtWt/RRaw+h0Eelme9OCOvy" crossorigin="anonymous"></script>
+<script>
+mermaid.initialize({
+  startOnLoad: true,
+  theme: 'base',
+  fontFamily: "'IBM Plex Mono', ui-monospace, monospace",
+  flowchart: { curve: 'basis' },
+  themeVariables: {
+    background: '#141926',
+    primaryColor: '#1A2130',
+    primaryTextColor: '#E9E4D8',
+    primaryBorderColor: '#3A4356',
+    secondaryColor: '#1A2130',
+    tertiaryColor: '#161C29',
+    lineColor: '#5A6375',
+    textColor: '#8B93A3',
+    clusterBkg: '#10141D',
+    clusterBorder: '#2A3140',
+    edgeLabelBackground: '#141926',
+    fontSize: '13px'
+  }
+});
+</script>
 </body>
 </html>
