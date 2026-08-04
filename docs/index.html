@@ -333,9 +333,9 @@ history, _ := log.<span class="f">Commits</span>(ctx, <span class="s">"invoice-4
   <h2>If you know git, you already know it.</h2>
   <p class="lede">Stage with <code>Append</code>, seal with <code>Commit</code>, read with
   <code>Commits</code>. Each document's history is a branch; <code>Head</code> is its tip.
-  One deliberate divergence: author and time stay <b>out</b> of the hash, so the same
-  logical change always yields the same ID — that's what makes retries dedup to a
-  single commit.</p>
+  One deliberate divergence: a commit stores <code>At</code> and <code>Authors</code>, but
+  the hash covers only parent, message, and changes — so a replayed delivery yields
+  the same ID, and retries dedup to a single commit.</p>
   <div class="diagram" role="img" aria-label="Side-by-side mapping: git's working tree, index, commit, and branch history correspond to chronicle's Change, pending buffer, Commit, and per-document Log.">
 <pre class="mermaid">
 flowchart LR
@@ -354,7 +354,7 @@ flowchart LR
         direction TB
         C1["Change&lt;br/&gt;(one edit)"]
         C2["pending&lt;br/&gt;(staged)"]
-        C3["Commit&lt;br/&gt;ID = hash(parent, message, changes)&lt;br/&gt;no author, no time"]
+        C3["Commit&lt;br/&gt;ID = hash(parent, message, changes)&lt;br/&gt;At, Authors stored — not hashed"]
         C4["per-doc history = Log&lt;br/&gt;Head → parent → …"]
         C1 -->|Recorder.Append| C2
         C2 -->|"Recorder.Commit(WithMessage)"| C3
