@@ -102,8 +102,11 @@ difference changes it — a tamper-evident chain.
 **How.** `computeID` (`core/commit.go`) hashes three **length-framed** fields in a
 fixed order via `writeField` (each prefixed by its byte length as 8 big-endian
 bytes). Deliberately UNLIKE git, the commit's `At` and `Authors` are **excluded**
-from the hash, so the same logical change sealed by a different producer or at a
-different time converges to one ID — which is what powers dedup (pattern 7).
+from the hash — commit metadata never perturbs the ID (`Authors` is instead
+recomputed from `Changes` by `VerifyChain`; mismatch → `ErrAuthorsMismatch`).
+Note the hashed `changes` payload carries per-`Change` `At` stamps set at
+`Append`, so a re-staged edit still hashes fresh; dedup is powered by
+idempotency keys (pattern 7), not ID convergence.
 `TestComputeID_CanonicalPreimageFormat` pins the exact byte layout;
 `TestComputeID_FieldsAreUnambiguous` proves the framing blocks a colliding
 re-split.
@@ -224,8 +227,9 @@ belongs here, not in `core`.
 A backend is "correct" when it passes the suite (`core/conformance`):
 
 - `RunLogConformance` (mandatory): empty head/commits, append→head, parent
-  chaining, hash re-verification of the stored chain (`changelog.Verify`),
-  newest-first order, limit, per-doc isolation, context cancellation.
+  chaining, hash re-verification of the stored chain plus the `Authors`
+  recomputation (`changelog.Verify`), newest-first order, limit, per-doc
+  isolation, context cancellation.
 - `RunSerializableAppend` (opt-in): concurrent same-doc seals form one linear
   chain — transactional backends only.
 - `RunDeduperConformance` (opt-in): idempotency keys are scoped per document.

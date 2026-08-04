@@ -13,15 +13,22 @@ tamper-evident, the same structure git and blockchains use. Fields are
 length-framed before hashing so no two different inputs can collide by
 concatenation.
 
-Time and authors are deliberately excluded from the hash, so the same logical
-change always produces the same ID — which is what makes idempotent dedup
-possible (see content addressing, below).
+The commit's own time and author metadata are deliberately excluded from the
+hash — the ID names the content, and metadata can never perturb the chain
+(`Authors` is derived from the changes and cross-checked by `VerifyChain`).
+Each `Change`'s `at`/`actor` fields ARE part of that content, though, and
+`Append` stamps `at` at staging time — so identical edits staged at different
+times still hash differently. Idempotent dedup is powered by idempotency keys,
+not hash equality (below).
 
 ## Content-addressed storage
 
-An object's identifier is derived from its content rather than assigned.
-Sealing identical changes twice yields the same commit ID, so a redelivered
-message dedups to one commit instead of appending a duplicate
+An object's identifier is derived from its content rather than assigned: equal
+`(parent, message, changes)` always name the same commit, and an ID can be
+re-verified from content alone. Write-time dedup is NOT hash-based, though —
+`Seal` restamps change timestamps into the payload, and the anti-fork
+constraint rejects even a byte-identical re-append (`ErrParentConflict`). A
+redelivered message dedups to one commit through its idempotency key
 (`Service.Seal` + the `Deduper` capability, [`core/service.go`](core/service.go)).
 
 ## Trusted anchor / checkpoint verification
@@ -115,7 +122,8 @@ is, or looking up how a problem was solved elsewhere. Ranked by closeness.
 
 - **git** — the write model: stage, seal into a content-addressed commit,
   hash-chain to the parent. See [the git model](core/MODEL.md) for the
-  side-by-side and the one deliberate divergence (no author/time in the hash).
+  side-by-side and the one deliberate divergence (commit metadata stays out of
+  the hash).
   One inversion worth knowing: git stores snapshots and derives diffs;
   chronicle stores diffs and derives snapshots.
 - **Event sourcing / CQRS** (Greg Young; Kafka's log-as-truth) — the

@@ -40,6 +40,12 @@ published as per-module Go tags: `core/vX.Y.Z`, `adapters/memory/vX.Y.Z`,
   when the target commit is at or after the stored snapshot — recent-history
   time-travel reads become O(commits since snapshot). Older targets fall back
   to full replay; historical reads never move the snapshot cache.
+- **`core`**: `VerifyChain` / `VerifyChainAfter` now also recompute each
+  commit's `Authors` from its `Changes` and flag a mismatch
+  (`ErrAuthorsMismatch`). `Authors` is derived metadata outside the hash, so
+  recomputation is what makes editing it after sealing detectable. `Commit.At`
+  stays unauthenticated convenience metadata — the authenticated timeline is
+  the hashed per-`Change` `At`.
 
 ### Changed
 - **`core`**: `Service.Seal` retries on `ErrParentConflict` now back off with

@@ -14,14 +14,21 @@ import (
 // hash-chained to its parent.
 //
 // Deliberately UNLIKE git, the hash (ID) covers only (Parent, Message, Changes) —
-// NOT At or Authors. So the same logical change sealed by different producers, or
-// at different times, yields the SAME ID. That content-addressing is what lets a
-// retried delivery dedup to a single commit (see Deduper).
+// NOT the commit's At or Authors. Equal (Parent, Message, Changes) always yield
+// the same ID. Note the limit of that claim: each Change carries its own At,
+// stamped by Recorder.Append at staging time and hashed as part of Changes — so
+// re-staging the same logical edit later produces a different ID. Exactly-once
+// replay is therefore the job of idempotency keys (see Deduper), not of hash
+// equality.
 //
 //   - ID       the commit hash (see computeID).
 //   - Parent   the previous commit's ID; "" marks the root (first commit on a doc).
-//   - At       when it was sealed (NOT hashed).
-//   - Authors  the distinct Change actors, sorted (NOT hashed).
+//   - At       when it was sealed (NOT hashed) — unauthenticated convenience
+//              metadata. The authenticated timeline is each Change.At, which the
+//              hash covers as part of Changes.
+//   - Authors  the distinct Change actors, sorted (NOT hashed) — derived from
+//              Changes; VerifyChain recomputes and cross-checks it, so editing
+//              it after sealing is detectable (ErrAuthorsMismatch).
 //   - Message  an optional annotation from WithMessage; IS hashed, so editing it
 //              after the fact breaks the chain.
 //   - Changes  the edits this commit seals — its diff.
@@ -35,8 +42,8 @@ type Commit struct {
 }
 
 // computeID is the commit's content address: SHA-256 over the parent ID, the
-// message, and the canonical JSON of the changes — deliberately NOT the time or
-// authors. Equal (parent, message, changes) always yield the same ID; any
+// message, and the canonical JSON of the changes — deliberately NOT the commit's
+// At or Authors. Equal (parent, message, changes) always yield the same ID; any
 // difference changes it — a tamper-evident chain. Each field is length-framed
 // (see writeField) so the boundaries between parent, message, and changes are
 // unambiguous; without that framing a root commit (parent="") whose message

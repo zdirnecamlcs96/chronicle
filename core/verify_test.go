@@ -43,6 +43,12 @@ func TestVerifyChain(t *testing.T) {
 			cs[0].Changes[0].To = "forged"
 			return cs
 		}, ErrHashMismatch},
+		{"TamperedAuthors", func(cs []Commit) []Commit {
+			// Authors is not hashed, so only the recomputation from Changes
+			// can catch an after-the-fact edit.
+			cs[1].Authors = []string{"mallory"}
+			return cs
+		}, ErrAuthorsMismatch},
 		{"BrokenParentLink", func(cs []Commit) []Commit {
 			// Point the tip at a non-existent parent; its ID still matches its
 			// content (recomputed), so the linkage check must catch it.
@@ -104,6 +110,10 @@ func TestVerifyChainAfter(t *testing.T) {
 			tail[1].Message = "edited after the fact"
 			return a, tail
 		}, ErrHashMismatch},
+		{"TamperedAuthorsInTail", func(a string, tail []Commit) (string, []Commit) {
+			tail[1].Authors = append(tail[1].Authors, "mallory")
+			return a, tail
+		}, ErrAuthorsMismatch},
 		{"FirstParentNotAnchor", func(a string, tail []Commit) (string, []Commit) {
 			return "0000000000000000000000000000000000000000000000000000000000000000", tail
 		}, ErrBrokenChain},

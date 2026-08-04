@@ -7,8 +7,10 @@
 //                seals the staged Changes into a hash-chained Commit (git commit).
 //   - Commit   — an immutable, content-addressed commit: ID = hash(parent,
 //                message, changes), chained to its parent. Deliberately UNLIKE
-//                git, the hash excludes author + time, so identical content
-//                converges to one ID (this powers Deduper).
+//                git, the hash excludes the commit's own At/Authors metadata —
+//                identical content names the same ID. Replay dedup comes from
+//                idempotency keys (Deduper), not hash equality: each staged
+//                Change is timestamped at Append and hashed with the payload.
 //   - Log      — the REPOSITORY, where commits live. Each document has its own
 //                chain, like a branch: Head is the tip, Commits is `git log`.
 //                Storage is pluggable; in-memory / SQL / ClickHouse backends live

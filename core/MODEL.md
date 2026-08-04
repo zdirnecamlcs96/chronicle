@@ -24,7 +24,7 @@ flowchart LR
         direction TB
         C1["Change<br/>(one edit)"]
         C2["pending<br/>(staged)"]
-        C3["Commit<br/>ID = hash(parent,<br/>message, changes)<br/><b>(no author/time)</b>"]
+        C3["Commit<br/>ID = hash(parent,<br/>message, changes)<br/><b>(At/Authors stored, not hashed)</b>"]
         C4["per-doc history = Log<br/>Head → parent → …"]
         C5["Commits · FindByID"]
         C1 -->|Recorder.Append| C2
@@ -76,13 +76,18 @@ Two things git users reach for that **don't** exist here:
 ## The one deliberate divergence
 
 git's commit SHA folds **author + time** into the hash, so every commit is
-unique. The changelog **deliberately leaves them out**:
+unique. The changelog **deliberately leaves the commit's own metadata out**:
 
 ```
-Commit.ID = SHA-256( parent + message + canonicalJSON(changes) )   // not At, not Authors
+Commit.ID = SHA-256( parent + message + canonicalJSON(changes) )   // not Commit.At, not Authors
 ```
 
-So the same logical change — sealed by a different producer, or at a different
-time — yields the **same ID**. That content-addressing is what lets an
-at-least-once delivery **dedup to a single commit** (`Deduper`): a retry carrying
-a key already seen returns the original commit instead of sealing a duplicate.
+The ID names the content: equal `(parent, message, changes)` always yield the
+same ID, and `At`/`Authors` are stored metadata that can never perturb the
+chain (`Authors` is derived from the changes and cross-checked by
+`VerifyChain`). One caveat keeps the claim honest: each `Change` carries its
+own `At`, stamped by `Recorder.Append` at staging time and hashed as part of
+the payload — so re-staging the same logical edit later still produces a
+different ID. Dedup of at-least-once delivery is therefore the job of
+**idempotency keys** (`Deduper`): a retry carrying a key already seen returns
+the original commit instead of sealing a duplicate.

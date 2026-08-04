@@ -17,12 +17,18 @@ var (
 	// ErrFork means two commits share a parent (or two roots exist) — the
 	// history is not a single linear chain.
 	ErrFork = errors.New("changelog: two commits share a parent")
+	// ErrAuthorsMismatch means a commit's Authors is not the sorted, distinct
+	// actor set of its Changes. Authors is derived metadata and NOT hashed, so
+	// this recomputation is the only check that catches editing it after sealing.
+	ErrAuthorsMismatch = errors.New("changelog: commit authors do not match its changes' actors")
 )
 
 // VerifyChain checks that commits — AS RETURNED BY Log.Commits, newest first —
 // form one tamper-free linear chain: exactly one root, each commit's Parent
-// equal to its predecessor's ID, no two commits sharing a parent, and every ID
-// equal to the recomputed content hash of its (Parent, Message, Changes).
+// equal to its predecessor's ID, no two commits sharing a parent, every ID
+// equal to the recomputed content hash of its (Parent, Message, Changes), and
+// every Authors equal to the recomputed distinct actor set of its Changes
+// (Authors is derived, not hashed — recomputation is what protects it).
 // An empty history is valid.
 //
 // The recompute is sound because adapters return Changes as Go structs
@@ -50,9 +56,27 @@ func VerifyChain(commits []Commit) error {
 		if id != c.ID {
 			return fmt.Errorf("%w: commit %d claims %s", ErrHashMismatch, pos, c.ID)
 		}
+		if !authorsMatch(c.Authors, c.Changes) {
+			return fmt.Errorf("%w: commit %d (%s)", ErrAuthorsMismatch, pos, c.ID)
+		}
 		prev = c.ID
 	}
 	return nil
+}
+
+// authorsMatch reports whether stored is exactly distinctAuthors(changes) —
+// the sorted, de-duplicated actor set the Recorder derives at seal time.
+func authorsMatch(stored []string, changes []Change) bool {
+	want := distinctAuthors(changes)
+	if len(stored) != len(want) {
+		return false
+	}
+	for i := range want {
+		if stored[i] != want[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // Verify fetches docID's full history from log and runs VerifyChain over it.
@@ -91,6 +115,9 @@ func VerifyChainAfter(anchorID string, tail []Commit) error {
 		}
 		if id != c.ID {
 			return fmt.Errorf("%w: commit %d claims %s", ErrHashMismatch, pos, c.ID)
+		}
+		if !authorsMatch(c.Authors, c.Changes) {
+			return fmt.Errorf("%w: commit %d (%s)", ErrAuthorsMismatch, pos, c.ID)
 		}
 		prev = c.ID
 	}
