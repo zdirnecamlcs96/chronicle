@@ -1,0 +1,500 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>chronicle — a git-shaped changelog for Go</title>
+<meta name="description" content="A durable, database-agnostic changelog (audit-log) library for Go. Stage changes, seal them into hash-chained commits, store them behind a 3-method Log port.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='13' fill='%23BE3A34'/%3E%3Ccircle cx='16' cy='16' r='8' fill='none' stroke='%23E9E4D8' stroke-width='2'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --ink:#10141D;
+  --ink-raise:#161C29;
+  --ink-card:#141926;
+  --vellum:#E9E4D8;
+  --muted:#8B93A3;
+  --faint:#2A3140;
+  --wax:#BE3A34;
+  --wax-deep:#8E2A26;
+  --gold:#D9A441;
+  --jade:#5FA97C;
+  --display:'Fraunces',Georgia,serif;
+  --body:'IBM Plex Sans',system-ui,sans-serif;
+  --mono:'IBM Plex Mono',ui-monospace,monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth}
+body{
+  background:var(--ink);
+  color:var(--vellum);
+  font-family:var(--body);
+  font-size:16.5px;
+  line-height:1.65;
+  -webkit-font-smoothing:antialiased;
+}
+a{color:inherit}
+a:focus-visible,button:focus-visible{outline:2px solid var(--gold);outline-offset:3px;border-radius:2px}
+::selection{background:var(--wax);color:var(--vellum)}
+
+/* ---------- shell + chain spine ---------- */
+.shell{max-width:1080px;margin:0 auto;padding:0 24px;position:relative}
+@media(min-width:960px){
+  .shell{padding-left:76px}
+  .shell::before{
+    content:"";position:absolute;left:34px;top:120px;bottom:96px;width:1px;
+    background:linear-gradient(to bottom,transparent,var(--faint) 40px,var(--faint) calc(100% - 40px),transparent);
+  }
+}
+section{padding:88px 0 40px;position:relative}
+.eyebrow{
+  font-family:var(--mono);font-size:.78rem;letter-spacing:.04em;color:var(--muted);
+  display:flex;align-items:center;gap:.6em;margin-bottom:1.1rem;
+}
+.eyebrow .h{color:var(--gold)}
+@media(min-width:960px){
+  .eyebrow::before{
+    content:"";position:absolute;left:-47px;width:11px;height:11px;border-radius:50%;
+    background:var(--ink);border:2px solid var(--muted);margin-top:.15em;
+  }
+  section.sealed .eyebrow::before{background:var(--wax);border-color:var(--wax-deep)}
+}
+h2{font-family:var(--display);font-weight:600;font-size:clamp(1.6rem,3.2vw,2.1rem);line-height:1.2;margin-bottom:.9rem}
+.lede{color:var(--muted);max-width:58ch}
+.lede b,.lede strong{color:var(--vellum);font-weight:500}
+code{font-family:var(--mono);font-size:.92em}
+p code,li code,td code{background:var(--ink-raise);border:1px solid var(--faint);border-radius:4px;padding:.08em .35em;font-size:.85em}
+
+/* ---------- header ---------- */
+header{padding:26px 0;display:flex;align-items:baseline;gap:28px;flex-wrap:wrap}
+.wordmark{font-family:var(--display);font-weight:600;font-size:1.25rem;text-decoration:none;display:flex;align-items:center;gap:.5em}
+.wordmark .seal-dot{width:.72em;height:.72em;border-radius:50%;background:var(--wax);box-shadow:inset 0 0 0 2.5px var(--wax-deep)}
+nav{margin-left:auto;display:flex;gap:22px;font-family:var(--mono);font-size:.82rem}
+nav a{color:var(--muted);text-decoration:none}
+nav a:hover{color:var(--vellum)}
+
+/* ---------- hero ---------- */
+.hero{padding:64px 0 40px;display:grid;gap:56px;align-items:center}
+@media(min-width:900px){.hero{grid-template-columns:1.05fr .95fr;padding:88px 0 56px}}
+.hero h1{font-family:var(--display);font-weight:600;font-size:clamp(2.1rem,4.6vw,3.15rem);line-height:1.12;letter-spacing:-.01em;margin:0 0 1.1rem}
+.hero h1 em{font-style:italic;color:var(--gold)}
+.hero .sub{color:var(--muted);max-width:52ch;margin-bottom:1.8rem}
+.hero .sub b{color:var(--vellum);font-weight:500}
+.pill{
+  display:inline-flex;align-items:center;gap:.5em;font-family:var(--mono);font-size:.75rem;
+  color:var(--muted);border:1px solid var(--faint);border-radius:99px;padding:.3em 1em;margin-bottom:1.6rem;
+}
+.pill .dot{width:7px;height:7px;border-radius:50%;background:var(--gold)}
+.cta{display:flex;gap:14px;flex-wrap:wrap}
+.btn{
+  font-family:var(--mono);font-size:.86rem;text-decoration:none;border-radius:6px;
+  padding:.72em 1.35em;border:1px solid var(--faint);transition:border-color .15s,background .15s;
+}
+.btn.primary{background:var(--wax);border-color:var(--wax);color:#FCF8EF;font-weight:500}
+.btn.primary:hover{background:var(--wax-deep);border-color:var(--wax-deep)}
+.btn.ghost:hover{border-color:var(--muted)}
+
+/* ---------- hero ledger artifact ---------- */
+.ledger{font-family:var(--mono);font-size:.8rem;display:flex;flex-direction:column;position:relative}
+.ledger::before{content:"";position:absolute;left:13px;top:26px;bottom:14px;width:1px;background:var(--faint)}
+.entry{
+  background:var(--ink-card);border:1px solid var(--faint);border-radius:8px;
+  padding:14px 16px 12px 40px;position:relative;margin-bottom:14px;
+}
+.entry::before{
+  content:"";position:absolute;left:8px;top:18px;width:11px;height:11px;border-radius:50%;
+  background:var(--ink);border:2px solid var(--muted);
+}
+.entry.staged{border-style:dashed;color:var(--muted)}
+.entry.staged::before{border-color:var(--faint);background:var(--ink-card)}
+.entry.head{border-color:#3A4356;background:var(--ink-raise)}
+.entry.head::before{background:var(--wax);border-color:var(--wax-deep)}
+.entry .row1{display:flex;align-items:center;gap:.8em;margin-bottom:.35rem;flex-wrap:wrap}
+.entry .hash{color:var(--gold)}
+.entry .msg{color:var(--vellum)}
+.entry.staged .msg{color:var(--muted);font-style:italic}
+.entry .tag{margin-left:auto;font-size:.68rem;letter-spacing:.06em;color:var(--muted)}
+.entry .tag.sealed{color:var(--wax);display:inline-flex;align-items:center;gap:.45em}
+.entry .tag.sealed::before{content:"";width:.7em;height:.7em;border-radius:50%;background:var(--wax);box-shadow:inset 0 0 0 2px var(--wax-deep)}
+.entry .diff{color:var(--muted);white-space:pre-wrap}
+.entry .diff .path{color:#A9B2C4}
+.entry .diff .to{color:var(--jade)}
+.entry .parent{color:var(--muted);opacity:.65;font-size:.72rem;margin-top:.3rem}
+.ledger .caption{color:var(--muted);font-size:.72rem;padding-left:40px;opacity:.8}
+@media(prefers-reduced-motion:no-preference){
+  .entry{animation:settle .6s ease both}
+  .entry.staged{animation-delay:.9s}
+  .entry.head{animation-delay:.3s}
+  .entry.root{animation-delay:.1s}
+  .entry.head::before{animation:stamp .45s ease .75s both}
+  @keyframes settle{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+  @keyframes stamp{0%{transform:scale(2.2);opacity:0}60%{transform:scale(.9);opacity:1}100%{transform:scale(1)}}
+}
+
+/* ---------- code blocks ---------- */
+pre.code{
+  background:var(--ink-card);border:1px solid var(--faint);border-radius:10px;
+  padding:20px 22px;overflow-x:auto;font-family:var(--mono);font-size:.82rem;line-height:1.7;
+  margin:1.4rem 0;
+}
+pre.code .c{color:var(--muted);opacity:.75}
+pre.code .s{color:var(--gold)}
+pre.code .k{color:#C97B6B}
+pre.code .f{color:#9BB4D8}
+.install{
+  font-family:var(--mono);font-size:.84rem;background:var(--ink-raise);border:1px solid var(--faint);
+  border-radius:8px;padding:.8em 1.2em;display:inline-block;
+}
+.install .p{color:var(--muted);user-select:none}
+
+/* ---------- feature grid ---------- */
+.grid{display:grid;gap:14px;margin-top:2.2rem;grid-template-columns:1fr}
+@media(min-width:640px){.grid{grid-template-columns:1fr 1fr}}
+@media(min-width:960px){.grid{grid-template-columns:1fr 1fr 1fr}}
+.card{background:var(--ink-card);border:1px solid var(--faint);border-radius:10px;padding:20px 22px}
+.card h3{font-family:var(--body);font-weight:600;font-size:.98rem;margin-bottom:.45rem}
+.card h3 code{background:none;border:none;padding:0;color:var(--gold);font-size:.85em}
+.card p{color:var(--muted);font-size:.88rem;line-height:1.6}
+.card p code{font-size:.82em}
+
+/* ---------- diagrams ---------- */
+.diagram{
+  background:var(--ink-card);border:1px solid var(--faint);border-radius:10px;
+  padding:26px;margin-top:2rem;overflow-x:auto;
+}
+.dg{font-family:var(--mono);font-size:.76rem;line-height:1.5}
+.dg .box{
+  background:var(--ink-raise);border:1px solid #3A4356;border-radius:8px;
+  padding:.7em 1em;text-align:center;color:var(--vellum);
+}
+.dg .box small{display:block;color:var(--muted);font-size:.92em;margin-top:.3em;font-weight:400}
+.dg .g{color:var(--gold)}
+.dg .arrow{text-align:center;color:var(--muted);padding:6px 0 2px;font-size:.72rem}
+.dg .arrow::after{content:"↓";display:block;color:#5A6375;font-size:.95rem;line-height:1.1;margin-top:1px}
+/* git ↔ chronicle side-by-side */
+.duo{display:grid;grid-template-columns:1fr 56px 1fr;align-items:center;min-width:640px}
+.duo .colhead{
+  font-family:var(--display);font-style:italic;font-size:1.05rem;text-align:center;
+  color:var(--vellum);padding-bottom:14px;
+}
+.duo .eq{text-align:center;color:var(--gold);opacity:.7}
+.duo .box{align-self:stretch;display:flex;flex-direction:column;justify-content:center}
+/* layered architecture */
+.arch{display:flex;flex-direction:column;min-width:620px}
+.arch .band{border:1px dashed var(--faint);border-radius:10px;padding:14px}
+.arch .bandlab{
+  font-size:.66rem;letter-spacing:.08em;text-transform:uppercase;
+  color:var(--muted);margin-bottom:10px;
+}
+.arch .pair{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.arch .trio{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px}
+.arch .port{border-color:var(--gold);margin-top:10px}
+.arch .port b{color:var(--gold);font-weight:500}
+.arch .caps{border-style:dashed;margin-top:10px;color:var(--muted)}
+.arch .caps small{margin-top:.15em}
+.arch .db{display:block;color:#A9B2C4;font-style:normal;margin-top:.25em}
+.arch .conf{
+  margin-top:14px;border:1px dashed rgba(95,169,124,.5);border-radius:10px;
+  padding:.75em 1em;text-align:center;font-size:.72rem;color:var(--jade);
+}
+.arch .conf span{display:block;color:var(--muted);margin-top:.2em}
+
+/* ---------- tables ---------- */
+.tablewrap{overflow-x:auto;margin-top:2rem}
+table{border-collapse:collapse;width:100%;font-size:.88rem;min-width:640px}
+th{font-family:var(--mono);font-size:.72rem;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);font-weight:500;text-align:left}
+th,td{padding:.75em .9em;border-bottom:1px solid var(--faint)}
+td{color:var(--muted)}
+td:first-child{color:var(--vellum)}
+.ok{color:var(--jade)}
+.na{opacity:.5}
+
+/* ---------- git model extras ---------- */
+.mapnote{margin-top:1.6rem;color:var(--muted);font-size:.9rem;max-width:60ch}
+.mapnote code{font-size:.82em}
+
+/* ---------- footer / root commit ---------- */
+footer{padding:110px 0 70px;position:relative}
+@media(min-width:960px){
+  footer .rootmark::before{
+    content:"";position:absolute;left:-47px;top:.3em;width:11px;height:11px;border-radius:50%;
+    background:var(--faint);border:2px solid var(--muted);
+  }
+}
+footer .rootmark{font-family:var(--mono);font-size:.78rem;color:var(--muted);position:relative;margin-bottom:1.2rem}
+footer .rootmark .h{color:var(--gold)}
+.caveats{display:grid;gap:10px;margin:1.6rem 0 2.2rem;max-width:70ch}
+.caveats li{
+  list-style:none;color:var(--muted);font-size:.88rem;padding-left:1.4em;position:relative;
+}
+.caveats li::before{content:"⚠";position:absolute;left:0;color:var(--gold);font-size:.8em;top:.25em}
+.footlinks{display:flex;gap:22px;flex-wrap:wrap;font-family:var(--mono);font-size:.8rem}
+.footlinks a{color:var(--muted)}
+.footlinks a:hover{color:var(--vellum)}
+.license{margin-top:2.4rem;color:var(--muted);font-size:.78rem;font-family:var(--mono);opacity:.7}
+</style>
+</head>
+<body>
+<div class="shell">
+
+<header>
+  <a class="wordmark" href="#"><span class="seal-dot" aria-hidden="true"></span>chronicle</a>
+  <nav aria-label="Sections">
+    <a href="#start">quick start</a>
+    <a href="#model">git model</a>
+    <a href="#architecture">architecture</a>
+    <a href="#backends">backends</a>
+    <a href="https://github.com/zdirnecamlcs96/chronicle">github</a>
+  </nav>
+</header>
+
+<section class="hero" aria-label="Introduction">
+  <div>
+    <span class="pill"><span class="dot" aria-hidden="true"></span>v0 · experimental — API may change before v1</span>
+    <h1>Every change, <em>sealed</em> into a chain you can verify.</h1>
+    <p class="sub">A <b>durable, database-agnostic changelog (audit-log) library for Go</b>.
+    It's intentionally git-shaped: stage edits, seal them into content-addressed
+    commits hash-chained to their parents, keep a history per document.
+    Store it all behind a 3-method <code>Log</code> port.</p>
+    <div class="cta">
+      <a class="btn primary" href="https://pkg.go.dev/github.com/zdirnecamlcs96/chronicle/core">pkg.go.dev ↗</a>
+      <a class="btn ghost" href="https://github.com/zdirnecamlcs96/chronicle">source on GitHub ↗</a>
+    </div>
+  </div>
+  <div class="ledger" aria-label="Example commit history for document invoice-42">
+    <div class="caption">Commits(ctx, "invoice-42") — newest-first</div>
+    <div class="entry staged">
+      <div class="row1"><span class="msg">pending — not yet sealed</span><span class="tag">staged</span></div>
+      <div class="diff"><span class="path">status</span>: sent → <span class="to">paid</span></div>
+    </div>
+    <div class="entry head">
+      <div class="row1"><span class="hash">5c81d40</span><span class="msg">send invoice</span><span class="tag sealed">sealed · Head</span></div>
+      <div class="diff"><span class="path">status</span>: draft → <span class="to">sent</span></div>
+      <div class="parent">parent 9f3ab12 · ID = SHA-256(parent, message, changes)</div>
+    </div>
+    <div class="entry root">
+      <div class="row1"><span class="hash">9f3ab12</span><span class="msg">create invoice</span><span class="tag">root</span></div>
+      <div class="diff"><span class="path">amount</span>: ∅ → <span class="to">1200</span></div>
+      <div class="parent">parent "" — history begins at the first commit</div>
+    </div>
+  </div>
+</section>
+
+<section id="start" class="sealed">
+  <div class="eyebrow"><span class="h">01</span> quick start</div>
+  <h2>Stage, seal, read back.</h2>
+  <p class="lede">One import for the core (<b>standard library only</b> — the package is
+  <code>changelog</code>), one for a backend. Swap the in-memory dev backend for MySQL or
+  ClickHouse later; the <code>Recorder</code> doesn't change.</p>
+<pre class="code"><code><span class="c">// go get github.com/zdirnecamlcs96/chronicle/core</span>
+<span class="c">// log := changelogmemory.New() — dev/test; swap for a durable adapter in prod</span>
+
+rec := changelog.<span class="f">NewRecorder</span>(<span class="s">"invoice-42"</span>, log)
+rec.<span class="f">Append</span>(changelog.Change{Actor: <span class="s">"alice"</span>, Path: <span class="s">"status"</span>, Kind: <span class="s">"put"</span>, From: <span class="s">"draft"</span>, To: <span class="s">"sent"</span>})
+commit, err := rec.<span class="f">Commit</span>(ctx, changelog.<span class="f">WithMessage</span>(<span class="s">"send invoice"</span>))
+<span class="c">// commit.ID = SHA256 over length-framed (parent, message, canonical(changes)), chained onto Head</span>
+
+history, _ := log.<span class="f">Commits</span>(ctx, <span class="s">"invoice-42"</span>, <span class="k">0</span>) <span class="c">// newest-first</span></code></pre>
+  <p><span class="install"><span class="p">$ </span>go get github.com/zdirnecamlcs96/chronicle/core@latest</span></p>
+</section>
+
+<section id="features">
+  <div class="eyebrow"><span class="h">02</span> what's in the box</div>
+  <h2>Small surface, strong guarantees.</h2>
+  <div class="grid">
+    <div class="card">
+      <h3>Tamper-evident hash chain</h3>
+      <p><code>Commit.ID</code> is SHA-256 over length-framed parent, message, and
+      canonicalized changes. Rewrite history and <code>VerifyChain</code> breaks.</p>
+    </div>
+    <div class="card">
+      <h3>One 3-method port</h3>
+      <p>The whole library hangs off <code>Log</code>: <code>AppendCommit</code>,
+      <code>Commits</code>, <code>Head</code>. Implement it and any store becomes a backend.</p>
+    </div>
+    <div class="card">
+      <h3>stdlib-only core</h3>
+      <p>The core module imports nothing beyond the standard library. Database drivers
+      live in the adapters' own <code>go.mod</code>s.</p>
+    </div>
+    <div class="card">
+      <h3>Incremental verification</h3>
+      <p><code>VerifyChainAfter</code> checks only commits past a trusted anchor —
+      no full-chain replay on every audit.</p>
+    </div>
+    <div class="card">
+      <h3>Idempotency keys</h3>
+      <p>At-least-once delivery seals exactly one commit: a retried key returns the
+      original commit instead of a duplicate.</p>
+    </div>
+    <div class="card">
+      <h3>Time travel</h3>
+      <p><code>StateAt</code> reconstructs a document at any commit, snapshot-backed —
+      O(commits since snapshot), not O(all history).</p>
+    </div>
+    <div class="card">
+      <h3>JSON-Patch interop</h3>
+      <p>The <code>kit</code> module diffs states, converts change batches to and from
+      JSON-Patch, and reconstructs state from history.</p>
+    </div>
+    <div class="card">
+      <h3>Conformance as contract</h3>
+      <p>A backend is correct when it passes the suite — that's what makes
+      “database-agnostic” trustworthy, including for a <code>Log</code> you write.</p>
+    </div>
+    <div class="card">
+      <h3>Graceful degradation</h3>
+      <p>Four optional capabilities — <code>Indexer</code>, <code>Deduper</code>,
+      <code>TailReader</code>, <code>Snapshotter</code>. A backend without them still works.</p>
+    </div>
+  </div>
+</section>
+
+<section id="model">
+  <div class="eyebrow"><span class="h">03</span> the mental model</div>
+  <h2>If you know git, you already know it.</h2>
+  <p class="lede">Stage with <code>Append</code>, seal with <code>Commit</code>, read with
+  <code>Commits</code>. Each document's history is a branch; <code>Head</code> is its tip.
+  One deliberate divergence: author and time stay <b>out</b> of the hash, so the same
+  logical change always yields the same ID — that's what makes retries dedup to a
+  single commit.</p>
+  <div class="diagram" role="img" aria-label="Side-by-side mapping: git's working tree, index, commit, and branch history correspond to chronicle's Change, pending buffer, Commit, and per-document Log.">
+    <div class="dg duo">
+      <div class="colhead">git</div><span></span><div class="colhead">chronicle</div>
+
+      <div class="box">working tree<small>(edits)</small></div>
+      <span class="eq">≈</span>
+      <div class="box">Change<small>(one edit)</small></div>
+
+      <div class="arrow">git add</div><span></span><div class="arrow">Recorder.Append</div>
+
+      <div class="box">index / staging area</div>
+      <span class="eq">≈</span>
+      <div class="box">pending<small>(staged)</small></div>
+
+      <div class="arrow">git commit -m</div><span></span><div class="arrow">Recorder.Commit(WithMessage)</div>
+
+      <div class="box">commit<small>SHA = hash(tree, parent,<br>author, time, message)</small></div>
+      <span class="eq">≈</span>
+      <div class="box">Commit<small>ID = hash(parent, message, changes)<br><span class="g">no author, no time</span></small></div>
+
+      <div class="arrow">chained onto HEAD</div><span></span><div class="arrow">chained onto Head</div>
+
+      <div class="box">branch history<small>HEAD → parent → …</small></div>
+      <span class="eq">≈</span>
+      <div class="box">per-doc history = Log<small>Head → parent → …</small></div>
+    </div>
+  </div>
+  <p class="mapnote">Two git reflexes that deliberately don't exist here: no
+  <code>init</code> (a history begins at its first commit, <code>parent == ""</code>) and no
+  working tree (the Recorder's staged buffer <i>is</i> the index).</p>
+</section>
+
+<section id="architecture">
+  <div class="eyebrow"><span class="h">04</span> architecture</div>
+  <h2>Producers → core → any backend.</h2>
+  <p class="lede">Something produces <code>Change</code>s — CRUD handlers, a message
+  consumer, a state diff — a <code>Recorder</code> or the <code>Service</code> facade seals
+  them, and the commit lands in whatever <code>Log</code> you picked. The conformance suite
+  validates every backend against the same contract.</p>
+  <div class="diagram" role="img" aria-label="Layers: your app produces changes; the stdlib-only core seals them through the Recorder or Service facade into the 3-method Log port; commits land in the memory, MySQL, or ClickHouse adapter, all validated by the conformance suite.">
+    <div class="dg arch">
+      <div class="band">
+        <div class="bandlab">producers — anything that emits changes</div>
+        <div class="box">your app<small>CRUD handlers · message consumer · state diff</small></div>
+      </div>
+      <div class="arrow">Change — in-process, no wire</div>
+      <div class="band">
+        <div class="bandlab">core — stdlib only · package changelog</div>
+        <div class="pair">
+          <div class="box">Recorder<small>Append(Change) → Commit()</small></div>
+          <div class="box">Service facade<small>Seal · Commits · AllCommits · Get</small></div>
+        </div>
+        <div class="arrow"></div>
+        <div class="box port"><b>Log port</b><small>AppendCommit · Commits · Head</small></div>
+        <div class="box caps">optional capabilities<small>Indexer · Deduper · TailReader · Snapshotter</small></div>
+      </div>
+      <div class="arrow">any Log implementation</div>
+      <div class="band">
+        <div class="bandlab">adapters — optional · pick one, or write your own</div>
+        <div class="trio">
+          <div class="box">adapters/memory<small>in-memory · dev/ref</small></div>
+          <div class="box">adapters/sql<small>transactional · fork-free<i class="db">▸ MySQL</i></small></div>
+          <div class="box">adapters/clickhouse<small>columnar · eventual<i class="db">▸ ClickHouse</i></small></div>
+        </div>
+      </div>
+      <div class="conf">core/conformance — RunLogConformance · RunSerializableAppend · RunDeduperConformance · RunTailReaderConformance · RunSnapshotterConformance<span>validates every backend above</span></div>
+    </div>
+  </div>
+</section>
+
+<section id="backends">
+  <div class="eyebrow"><span class="h">05</span> backends</div>
+  <h2>Pick a store — or write your own.</h2>
+  <p class="lede">Adapters are optional sibling modules; the core never imports one.
+  Implement the 3-method <code>Log</code> yourself and prove it with
+  <code>conformance.RunLogConformance</code>.</p>
+  <div class="tablewrap">
+  <table>
+    <thead>
+      <tr><th>Backend</th><th>Module</th><th>Consistency</th><th>Log conformance</th><th>Serializable append</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>changelogmemory.New()</code></td>
+        <td><code>adapters/memory</code></td>
+        <td>in-memory · dev/test only, lost on restart</td>
+        <td class="ok">✓</td>
+        <td class="na">— can fork</td>
+      </tr>
+      <tr>
+        <td><code>changelogsql.Open(…)</code></td>
+        <td><code>adapters/sql</code></td>
+        <td>transactional MySQL · <code>FOR UPDATE</code> + unique constraints</td>
+        <td class="ok">✓</td>
+        <td class="ok">✓ fork-free</td>
+      </tr>
+      <tr>
+        <td><code>changelogclickhouse.Open(…)</code></td>
+        <td><code>adapters/clickhouse</code></td>
+        <td>eventual · <code>ReplacingMergeTree</code> + <code>FINAL</code></td>
+        <td class="ok">✓</td>
+        <td class="na">— no synchronous locks</td>
+      </tr>
+    </tbody>
+  </table>
+  </div>
+  <p class="mapnote">Choose <code>adapters/sql</code> when concurrent writers must form one
+  linear chain per document; <code>adapters/clickhouse</code> for cheap columnar retention
+  and analytics where producers serialize per document. Operational details — pool
+  tuning, the ClickHouse <code>FINAL</code> cost, migrations, backup/restore — live in
+  <a href="https://github.com/zdirnecamlcs96/chronicle/blob/main/OPERATIONS.md">OPERATIONS.md</a>.</p>
+</section>
+
+<footer>
+  <div class="rootmark"><span class="h">parent ""</span> · root commit</div>
+  <h2>Read it before you run it.</h2>
+  <ul class="caveats">
+    <li><b>v0, experimental.</b> Pin a specific module version; modules are versioned
+    independently (<code>core/vX.Y.Z</code>, <code>adapters/sql/vX.Y.Z</code>, …).</li>
+    <li>The memory adapter is <b>reference/test only</b> — never production.</li>
+    <li>The <code>kit/httpapi</code> layer ships <b>no authentication, authorization, or rate
+    limiting</b> — those are the deployer's responsibility. Review against your own
+    threat model before exposing it to untrusted input.</li>
+  </ul>
+  <div class="footlinks">
+    <a href="https://pkg.go.dev/github.com/zdirnecamlcs96/chronicle/core">pkg.go.dev</a>
+    <a href="https://github.com/zdirnecamlcs96/chronicle">GitHub</a>
+    <a href="https://github.com/zdirnecamlcs96/chronicle/blob/main/CONCEPTS.md">CONCEPTS.md</a>
+    <a href="https://github.com/zdirnecamlcs96/chronicle/blob/main/OPERATIONS.md">OPERATIONS.md</a>
+    <a href="https://github.com/zdirnecamlcs96/chronicle/blob/main/CONTRIBUTING.md">CONTRIBUTING.md</a>
+  </div>
+  <p class="license">MIT license · github.com/zdirnecamlcs96/chronicle</p>
+</footer>
+
+</div>
+
+</body>
+</html>
