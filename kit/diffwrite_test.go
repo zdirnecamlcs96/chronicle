@@ -394,3 +394,28 @@ func idsOf(t *testing.T, v any) []string {
 	}
 	return ids
 }
+
+func TestKit_RecordUpdate_WithDiffOptions(t *testing.T) {
+	ctx := t.Context()
+	k := New(newMemService())
+
+	// Keyed reorder diffs to nothing -> core's empty-changes sentinel.
+	before := lines(el("P1", 1), el("P2", 2))
+	reordered := lines(el("P2", 2), el("P1", 1))
+	if _, err := k.RecordUpdate(ctx, "doc", before, reordered, WithDiffOptions(linesKey)); err != changelog.ErrEmptyChanges {
+		t.Fatalf("keyed reorder must seal nothing, got err=%v", err)
+	}
+
+	// A real edit records the keyed diff; other RecordOptions still apply.
+	edited := lines(el("P2", 9), el("P1", 1))
+	c, err := k.RecordUpdate(ctx, "doc", before, edited, WithDiffOptions(linesKey), WithMessage("bump"))
+	if err != nil {
+		t.Fatalf("RecordUpdate: %v", err)
+	}
+	if len(c.Changes) != 1 || c.Changes[0].Path != "lines.1.qty" || c.Changes[0].To != "9" {
+		t.Fatalf("want single keyed change lines.1.qty->9, got %+v", c.Changes)
+	}
+	if c.Message != "bump" {
+		t.Fatalf("message lost: %+v", c)
+	}
+}

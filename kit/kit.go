@@ -57,6 +57,7 @@ func (k *Kit) Service() changelog.Service { return k.svc }
 type recordConfig struct {
 	message        string
 	idempotencyKey string
+	diffOpts       []DiffOption
 }
 
 // RecordOption configures a single Record call.
@@ -73,11 +74,21 @@ func WithIdempotencyKey(key string) RecordOption {
 	return func(c *recordConfig) { c.idempotencyKey = key }
 }
 
+// WithDiffOptions forwards schema-declaring options to the Diff inside
+// RecordUpdate (array identity, ignored fields, value types).
+func WithDiffOptions(opts ...DiffOption) RecordOption {
+	return func(c *recordConfig) { c.diffOpts = append(c.diffOpts, opts...) }
+}
+
 // RecordUpdate diffs before→after and seals the resulting Changes as one commit.
 // If nothing changed it returns changelog.ErrEmptyChanges (reusing core's
 // sentinel — there is nothing to commit).
 func (k *Kit) RecordUpdate(ctx context.Context, docID string, before, after any, opts ...RecordOption) (changelog.Commit, error) {
-	changes, err := Diff(before, after)
+	var cfg recordConfig
+	for _, o := range opts {
+		o(&cfg)
+	}
+	changes, err := Diff(before, after, cfg.diffOpts...)
 	if err != nil {
 		return changelog.Commit{}, err
 	}
