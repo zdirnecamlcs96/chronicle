@@ -1,0 +1,53 @@
+- title: Tamper-evident hash chain
+  body: >-
+    <code>Commit.ID</code> is SHA-256 over length-framed parent, message, and
+    canonicalized changes. Rewrite history and <code>VerifyChain</code> breaks.
+
+- title: One 3-method port
+  body: >-
+    The whole library hangs off <code>Log</code>: <code>AppendCommit</code>,
+    <code>Commits</code>, <code>Head</code>. Implement it and any store becomes a
+    backend.
+
+- title: stdlib-only core
+  body: >-
+    The core module imports nothing beyond the standard library. Database drivers
+    live in the adapters' own <code>go.mod</code>s.
+
+- title: Incremental verification
+  body: >-
+    <code>VerifyChainAfter</code> checks only commits past a trusted anchor — no
+    full-chain replay on every audit.
+
+- title: Idempotency keys
+  body: >-
+    At-least-once delivery seals exactly one commit: a retried key returns the
+    original commit instead of a duplicate.
+
+- title: Time travel
+  body: >-
+    <code>StateAt</code> reconstructs a document at any commit, snapshot-backed —
+    O(commits since snapshot), not O(all history).
+
+- title: JSON-Patch interop
+  body: >-
+    The <code>kit</code> module diffs states, converts change batches to and from
+    JSON-Patch, and reconstructs state from history.
+
+- title: Dual-audience changes
+  body: >-
+    The record stays machine-shaped; <code>kit.Explain</code> derives label trails,
+    element names, and per-field value breakdowns at read time — structure only,
+    the styling stays yours.
+
+- title: Conformance as contract
+  body: >-
+    A backend is correct when it passes the suite — that's what makes
+    &ldquo;database-agnostic&rdquo; trustworthy, including for a <code>Log</code>
+    you write.
+
+- title: Graceful degradation
+  body: >-
+    Four optional capabilities — <code>Indexer</code>, <code>Deduper</code>,
+    <code>TailReader</code>, <code>Snapshotter</code>. A backend without them still
+    works.

@@ -15,8 +15,8 @@ carry their own driver dependency in their own `go.mod`.
 
 **Mental model:** it's intentionally git-shaped — stage edits, seal them into a
 content-addressed commit hash-chained to its parent, per-document branches. See
-**[the git model](core/MODEL.md)** for a side-by-side with git, and
-**[CONCEPTS.md](CONCEPTS.md)** for the patterns and algorithms underneath (hash
+**[the git model](docs/model.md)** for a side-by-side with git, and
+**[CONCEPTS.md](docs/concepts.md)** for the patterns and algorithms underneath (hash
 chain, event sourcing, snapshotting, anchor verification, …).
 
 ## Status & stability
@@ -27,7 +27,7 @@ version and check changes before upgrading. Modules are versioned independently
 conformance suite) is the most stable surface; capability interfaces and adapters
 may still evolve.
 
-Running a durable backend in production? See **[OPERATIONS.md](OPERATIONS.md)**
+Running a durable backend in production? See **[OPERATIONS.md](docs/operations.md)**
 for connection-pool tuning, the ClickHouse `FINAL` cost, migrations, and
 backup/restore.
 

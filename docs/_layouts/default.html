@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+{% include head.html %}
+</head>
+<body>
+{% include header.html %}
+
+{{ content }}
+
+{% include footer.html %}
+
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11.16.1/dist/mermaid.min.js" integrity="sha384-aBQXj4hK6Jm05i7aQAsUV3bLdSUrHX1BGYfMB0166TtWt/RRaw+h0Eelme9OCOvy" crossorigin="anonymous"></script>
+<script>
+// Kramdown emits ```mermaid as <pre><code class="language-mermaid">; mermaid wants <pre class="mermaid">.
+document.querySelectorAll('pre > code.language-mermaid').forEach(function (c) {
+  var pre = document.createElement('pre');
+  pre.className = 'mermaid';
+  pre.textContent = c.textContent;
+  var wrap = document.createElement('div');
+  wrap.className = 'diagram';
+  wrap.appendChild(pre);
+  c.parentElement.replaceWith(wrap);
+});
+mermaid.initialize({
+  startOnLoad: true,
+  theme: 'base',
+  fontFamily: "'Geist Mono', ui-monospace, monospace",
+  flowchart: { curve: 'basis' },
+  themeVariables: {
+    background: '#0F0F0F',
+    primaryColor: '#141414',
+    primaryTextColor: '#FAFAFA',
+    primaryBorderColor: '#262626',
+    secondaryColor: '#141414',
+    tertiaryColor: '#0F0F0F',
+    lineColor: '#52525B',
+    textColor: '#A1A1AA',
+    clusterBkg: '#0A0A0A',
+    clusterBorder: '#262626',
+    edgeLabelBackground: '#0F0F0F',
+    fontSize: '13px'
+  }
+});
+</script>
+</body>
+</html>
