@@ -119,6 +119,9 @@ func (d *differ) value(path []string, before, after any, out *[]changelog.Change
 
 func (d *differ) object(path []string, before, after map[string]any, out *[]changelog.Change) {
 	for _, k := range unionKeys(before, after) {
+		if _, skip := d.cfg.ignored[k]; skip {
+			continue
+		}
 		bv, bok := before[k]
 		av, aok := after[k]
 		child := childPath(path, k)
