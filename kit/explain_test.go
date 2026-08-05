@@ -107,3 +107,172 @@ func TestExplain_LabelResolver(t *testing.T) {
 		t.Fatalf("resolver miss must humanize, got %v", byPath["qty"].Field)
 	}
 }
+
+func TestExplain_KeyedElement(t *testing.T) {
+	commits := commitsFor(t, []any{
+		lines(el("P1", 1), el("P2", 2)),
+		lines(el("P1", 3), el("P2", 2)),
+	}, linesKey)
+	got, err := Explain(commits, linesKey)
+	if err != nil {
+		t.Fatalf("explain: %v", err)
+	}
+	edit := got[1][0]
+	if edit.Path != "lines.0.qty" {
+		t.Fatalf("unexpected change: %+v", edit.Change)
+	}
+	if edit.Element == nil || !reflect.DeepEqual(edit.Element.Trail, []string{"Lines"}) ||
+		edit.Element.ID != "P1" || edit.Element.Name != "NP1" {
+		t.Fatalf("want Element{[Lines] NP1 P1}, got %+v", edit.Element)
+	}
+	if !reflect.DeepEqual(edit.Field, []string{"Qty"}) {
+		t.Fatalf("Field must be relative to element root, got %v", edit.Field)
+	}
+}
+
+func TestExplain_WholeElementAddRemove(t *testing.T) {
+	commits := commitsFor(t, []any{
+		lines(el("P1", 1), el("P2", 2)),
+		lines(el("P2", 2), el("P3", 3)), // P1 removed, P3 added
+	}, linesKey)
+	got, err := Explain(commits, linesKey)
+	if err != nil {
+		t.Fatalf("explain: %v", err)
+	}
+	var del, add *Explained
+	for i := range got[1] {
+		switch got[1][i].Kind {
+		case KindDelete:
+			del = &got[1][i]
+		case KindCreate:
+			add = &got[1][i]
+		}
+	}
+	if del == nil || del.Element == nil || del.Element.ID != "P1" || len(del.Field) != 0 {
+		t.Fatalf("removal wants Element P1 + empty Field, got %+v", del)
+	}
+	if add == nil || add.Element == nil || add.Element.ID != "P3" || add.Element.Name != "NP3" || len(add.Field) != 0 {
+		t.Fatalf("addition wants Element P3 + empty Field, got %+v", add)
+	}
+}
+
+// Records written by the pre-feature positional differ decorate identically —
+// the metadata comes from the replayed revision, not from the record.
+func TestExplain_PreFeatureRecords(t *testing.T) {
+	doc := lines(el("P1", 1), el("P2", 2))
+	build, err := Diff(nil, doc) // legacy: no options, positional
+	if err != nil {
+		t.Fatalf("diff: %v", err)
+	}
+	legacyEdit := changelog.Change{Path: "lines.0.qty", Kind: KindPut, From: "1", To: "3"}
+	commits := []changelog.Commit{{Changes: build}, {Changes: []changelog.Change{legacyEdit}}}
+
+	got, err := Explain(commits, linesKey)
+	if err != nil {
+		t.Fatalf("explain: %v", err)
+	}
+	edit := got[1][0]
+	if edit.Element == nil || edit.Element.ID != "P1" || edit.Element.Name != "NP1" ||
+		!reflect.DeepEqual(edit.Field, []string{"Qty"}) {
+		t.Fatalf("old record must decorate fully, got %+v", edit)
+	}
+}
+
+func TestExplain_DisplayNames(t *testing.T) {
+	commits := commitsFor(t, []any{
+		map[string]any{
+			"assignee": "u1",
+			"users":    []any{map[string]any{"id": "u1", "name": "Alice"}},
+		},
+		map[string]any{
+			"assignee": "u2",
+			"users":    []any{map[string]any{"id": "u1", "name": "Alice"}, map[string]any{"id": "u2", "name": "Bob"}},
+		},
+	})
+	got, err := Explain(commits)
+	if err != nil {
+		t.Fatalf("explain: %v", err)
+	}
+	var edit *Explained
+	for i := range got[1] {
+		if got[1][i].Path == "assignee" {
+			edit = &got[1][i]
+		}
+	}
+	if edit == nil {
+		t.Fatalf("assignee change missing: %+v", got[1])
+	}
+	// Bob only exists in the after revision — either revision must resolve.
+	if edit.Display == nil || edit.Display.From != "Alice" || edit.Display.To != "Bob" {
+		t.Fatalf("want Display Alice->Bob, got %+v", edit.Display)
+	}
+	if edit.From != `"u1"` || edit.To != `"u2"` {
+		t.Fatalf("stored From/To must stay raw ids, got %+v", edit.Change)
+	}
+
+	// No known ids -> Display nil.
+	plain := commitsFor(t, []any{
+		map[string]any{"status": "open"},
+		map[string]any{"status": "paid"},
+	})
+	pg, err := Explain(plain)
+	if err != nil {
+		t.Fatalf("explain: %v", err)
+	}
+	if pg[1][0].Display != nil {
+		t.Fatalf("unknown values must not get Display, got %+v", pg[1][0].Display)
+	}
+}
+
+func TestExplain_NameFieldsOverride(t *testing.T) {
+	commits := commitsFor(t, []any{
+		map[string]any{"docs": []any{map[string]any{"id": "d1", "title": "Spec", "name": ""}}},
+		map[string]any{"docs": []any{map[string]any{"id": "d1", "title": "Spec v2", "name": ""}}},
+	})
+	got, err := Explain(commits, WithNameFields("title"))
+	if err != nil {
+		t.Fatalf("explain: %v", err)
+	}
+	edit := got[1][0]
+	if edit.Element == nil || edit.Element.Name != "Spec" {
+		t.Fatalf("WithNameFields must pick title, got %+v", edit.Element)
+	}
+}
+
+func TestExplain_RootArrayAndNestedKeyed(t *testing.T) {
+	// Root-level array via the "" config key, with a nested keyed array inside:
+	// the innermost element wins.
+	opts := WithArrayKeys(map[string]string{"": "id", "subs": "id"})
+	before := []any{map[string]any{
+		"id":   "R1",
+		"name": "Root",
+		"subs": []any{map[string]any{"id": "S1", "name": "Sub", "v": 1}},
+	}}
+	after := []any{map[string]any{
+		"id":   "R1",
+		"name": "Root",
+		"subs": []any{map[string]any{"id": "S1", "name": "Sub", "v": 2}},
+	}}
+	build, err := Diff(nil, before, opts)
+	if err != nil {
+		t.Fatalf("diff: %v", err)
+	}
+	change, err := Diff(before, after, opts)
+	if err != nil {
+		t.Fatalf("diff: %v", err)
+	}
+	got, err := Explain([]changelog.Commit{{Changes: build}, {Changes: change}}, opts)
+	if err != nil {
+		t.Fatalf("explain: %v", err)
+	}
+	edit := got[1][0]
+	if edit.Element == nil || edit.Element.ID != "S1" || edit.Element.Name != "Sub" {
+		t.Fatalf("innermost element must win, got %+v", edit.Element)
+	}
+	if !reflect.DeepEqual(edit.Field, []string{"V"}) {
+		t.Fatalf("Field relative to innermost element, got %v", edit.Field)
+	}
+	if !reflect.DeepEqual(edit.Element.Trail, []string{"Subs"}) {
+		t.Fatalf("inner trail from document root, got %v", edit.Element.Trail)
+	}
+}
