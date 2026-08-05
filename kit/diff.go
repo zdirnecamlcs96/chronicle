@@ -22,17 +22,24 @@ const (
 // before/after leaf values; "" means the value is absent on that side (From on a
 // create, To on a delete). Diff(x, x) returns no changes.
 //
-// Arrays diff positionally (by index): a mid-array insertion reads as a run of
-// puts plus a tail create — a documented v1 limitation, not a correctness bug for
-// reconstruction.
+// Arrays of objects pair by element identity when available, walking a chain
+// per array: the caller-configured key (WithArrayKeys) → a unique scalar "id"
+// field on every element of both sides → positional (by index). Scalar and
+// mixed arrays always pair positionally: a mid-array insertion reads as a run
+// of puts plus a tail create. Keyed pairing trades order for identity —
+// reordering alone records nothing, so replaying the changes reproduces the
+// element SET (survivors in before order, additions appended), not the after
+// ordering; use positional arrays where order is meaningful data.
+//
+// WithIgnoredFields suppresses bookkeeping fields at every depth (never
+// recorded, so never replayed); WithValueTypes records declared value-object
+// shapes as their canonical scalar (replay yields the scalar, not the
+// object). With no options, arrays without a usable id and all other values
+// diff exactly as before.
 //
 // States are expected to be object- or array-rooted (the CRUD norm). A scalar
 // root produces a single change with an empty Path, which Reconstruct does not
 // apply; diff object/array documents.
-//
-// Options declare the caller's schema (array identity, ignored bookkeeping
-// fields, value-object shapes — see DiffOption); with none, behavior is
-// exactly the zero-option legacy diff.
 func Diff(before, after any, opts ...DiffOption) ([]changelog.Change, error) {
 	b, err := normalize(before)
 	if err != nil {

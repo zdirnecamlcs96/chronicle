@@ -46,8 +46,34 @@ published as per-module Go tags: `core/vX.Y.Z`, `adapters/memory/vX.Y.Z`,
   recomputation is what makes editing it after sealing detectable. `Commit.At`
   stays unauthenticated convenience metadata — the authenticated timeline is
   the hashed per-`Change` `At`.
+- **`kit`**: `Diff` accepts schema-declaring options (`DiffOption`):
+  `WithArrayKeys` (per-array element identity as an index-free schema path →
+  dot-path into elements, `""` for a root array), `WithIgnoredFields`
+  (bookkeeping noise suppressed at every depth, no defaults),
+  `WithValueTypes` (caller-declared value-object shapes compared and recorded
+  via their canonical scalar). Arrays of objects pair by the configured key,
+  else by a unique scalar `id` on every element, else positionally; arrays of
+  scalars always pair by index. Keyed reordering alone records nothing, so
+  replay reproduces the element set (survivors in before order, additions
+  appended), not the after ordering. `RecordUpdate` forwards these via the
+  new `WithDiffOptions` record option.
+- **`kit`**: `Explain(commits, opts...)` — read-time display decoration. It
+  replays the chain (same contract as `Reconstruct`) and returns per-change
+  rows `{Change, Field, Element, Display}`: the field's human label trail
+  (caller resolver via `WithLabels`, Title Case fallback), the keyed array
+  element the change sits inside (`Trail`/`Name`/`ID`; whole-element
+  add/remove = `Element` with empty `Field`), and display names for id-valued
+  `From`/`To` resolved from id→name pairs in the surrounding revisions
+  (`WithNameFields` picks the name field). Nothing new is stored — records
+  written before this feature decorate identically, and the stored record,
+  hash preimage, and storage layers are untouched.
 
 ### Changed
+- **`kit`**: `Diff` now pairs arrays of objects by a unique scalar `id` field
+  when every element on both sides has one (the documented generic identity
+  convention) — reordering such an array no longer records per-index churn.
+  Declare `WithArrayKeys` to choose a different key; arrays without usable
+  identity keep the old positional behavior byte-for-byte.
 - **`core`**: `Service.Seal` retries on `ErrParentConflict` now back off with
   full jitter (~75 ms worst case across 5 attempts) instead of hammering.
 - **`kit`**: `Reconstruct` errors on a change `Kind` outside the kit vocabulary
