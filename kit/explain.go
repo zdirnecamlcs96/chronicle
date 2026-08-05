@@ -3,6 +3,8 @@ package chroniclekit
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
+	"strconv"
 
 	changelog "github.com/zdirnecamlcs96/chronicle/core"
 )
@@ -29,11 +31,43 @@ type Display struct {
 //   - Element set when the change sits inside a keyed array element; a
 //     whole-element addition/removal is Element with an empty Field.
 //   - Display resolved names when From/To values are known ids.
+//   - Bookkeeping true when the change touches a WithIgnoredFields entry (a
+//     bare name at any depth, or a schema path and its subtree) — recorded
+//     data a human display would fold away.
+//   - FromValue/ToValue a container From/To decomposed as a ValueNode tree —
+//     everything a display needs to break the value down per field without
+//     re-implementing the schema walk. Nil when the side is scalar or absent.
 type Explained struct {
 	changelog.Change
-	Field   []string
-	Element *Element
-	Display *Display
+	Field       []string
+	Element     *Element
+	Display     *Display
+	Bookkeeping bool
+	FromValue   *ValueNode
+	ToValue     *ValueNode
+}
+
+// ValueNode is a container value decomposed for display under the caller's
+// schema. It carries structure only — labels, element identity, canonical
+// scalars, order; joining, truncation, counts, and styling are the
+// consumer's business, so the kit never limits how it renders.
+//
+//   - Label  the node's display label: a field's label (WithLabels, Title
+//     Case fallback), an array element's display name (name fields / id→name
+//     index, index when identity is unusable), or — on the root — the
+//     value's own display name when it has one ("" otherwise).
+//   - Value  the canonical-JSON scalar at a leaf; "" on containers.
+//   - List   true when the node is an array (kids are elements, in order);
+//     false when it is an object (kids are fields, sorted by name).
+//   - Bookkeeping  true when the node's field is a WithIgnoredFields entry —
+//     the same mark rows carry, so displays fold noise inside the tree too.
+//   - Kids   the container's children; nil at leaves.
+type ValueNode struct {
+	Label       string
+	Value       string
+	List        bool
+	Bookkeeping bool
+	Kids        []ValueNode
 }
 
 // Explain replays commits (the chain from root, OLDEST first — same contract
@@ -43,9 +77,11 @@ type Explained struct {
 //
 // Options declare the caller's schema: WithArrayKeys/the id convention give
 // array elements identity, WithLabels supplies i18n labels (Title Case
-// fallback), WithNameFields picks the element display-name field. Display
-// names come from id→name pairs found in either revision surrounding each
-// commit (the after revision wins conflicts).
+// fallback), WithNameFields picks the element display-name field, and
+// WithIgnoredFields flags bookkeeping changes (Bookkeeping) for displays to
+// fold away — the stored record always keeps them. Display names come from
+// id→name pairs found in either revision surrounding each commit (the after
+// revision wins conflicts).
 //
 // Result rows align 1:1 with commits and their Changes.
 //
@@ -124,6 +160,9 @@ func decorate(cfg *diffConfig, state any, ch changelog.Change, names map[string]
 		}
 		schema = append(schema, seg)
 		trail = append(trail, labelFor(cfg, schema))
+		if bookkeeping(cfg, seg, schema) {
+			ex.Bookkeeping = true
+		}
 		if m, isMap := cur.(map[string]any); isMap {
 			cur = m[seg]
 		} else {
@@ -134,7 +173,76 @@ func decorate(cfg *diffConfig, state any, ch changelog.Change, names map[string]
 		ex.Field = field
 	}
 	ex.Element = elem
+	ex.FromValue = containerValue(cfg, schema, ch.From, names)
+	ex.ToValue = containerValue(cfg, schema, ch.To, names)
 	return ex
+}
+
+// containerValue decomposes a container From/To into its ValueNode tree; nil
+// for scalars and absent values. schema is the change's index-free path, so
+// nested arrays inside the value resolve their WithArrayKeys identity.
+func containerValue(cfg *diffConfig, schema []string, raw string, names map[string]string) *ValueNode {
+	v := parseJSON(raw)
+	if !isContainer(v) {
+		return nil
+	}
+	label := ""
+	if obj, isObj := v.(map[string]any); isObj {
+		for _, nf := range cfg.nameFields {
+			if s, ok := obj[nf].(string); ok && s != "" {
+				label = s
+				break
+			}
+		}
+	}
+	n := valueNode(cfg, schema, label, v, names)
+	return &n
+}
+
+func valueNode(cfg *diffConfig, schema []string, label string, v any, names map[string]string) ValueNode {
+	n := ValueNode{Label: label}
+	switch t := v.(type) {
+	case map[string]any:
+		keys := make([]string, 0, len(t))
+		for k := range t {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			cs := childPath(schema, k)
+			kid := valueNode(cfg, cs, labelFor(cfg, cs), t[k], names)
+			kid.Bookkeeping = bookkeeping(cfg, k, cs)
+			n.Kids = append(n.Kids, kid)
+		}
+	case []any:
+		n.List = true
+		kp, keyed := readKey(cfg, schema, t)
+		for i, el := range t {
+			lbl := strconv.Itoa(i)
+			if obj, isObj := el.(map[string]any); isObj && keyed {
+				if kv, ok := elemKeyValue(obj, kp); ok && kv != nil && !isContainer(kv) {
+					lbl = resolveName(cfg, obj, kv, names)
+				}
+			}
+			// schema passes through array elements unchanged — index-free.
+			n.Kids = append(n.Kids, valueNode(cfg, schema, lbl, el, names))
+		}
+	default:
+		n.Value = mustJSON(v)
+	}
+	return n
+}
+
+// bookkeeping reports whether the field at schema (whose final segment is
+// seg) is a WithIgnoredFields entry: its bare name, or its schema path.
+// Subtree coverage needs no prefix walk here — decorate checks every segment
+// as it descends, and valueNode marks the ancestor node itself.
+func bookkeeping(cfg *diffConfig, seg string, schema []string) bool {
+	if _, ok := cfg.ignoredNames[seg]; ok {
+		return true
+	}
+	_, ok := cfg.ignoredPaths[joinPath(schema)]
+	return ok
 }
 
 // readKey is the read-time identity chain for the array at schema: the

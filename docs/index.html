@@ -228,6 +228,7 @@ footer .rootmark .h{color:var(--gold)}
   <nav aria-label="Sections">
     <a href="#start">quick start</a>
     <a href="#model">git model</a>
+    <a href="#explain">two audiences</a>
     <a href="#architecture">architecture</a>
     <a href="#backends">backends</a>
     <a href="https://github.com/zdirnecamlcs96/chronicle">github</a>
@@ -328,6 +329,12 @@ history, _ := log.<span class="f">Commits</span>(ctx, <span class="s">"invoice-4
       JSON-Patch, and reconstructs state from history.</p>
     </div>
     <div class="card">
+      <h3>Dual-audience changes</h3>
+      <p>The record stays machine-shaped; <code>kit.Explain</code> derives label trails,
+      element names, and per-field value breakdowns at read time — structure only,
+      the styling stays yours.</p>
+    </div>
+    <div class="card">
       <h3>Conformance as contract</h3>
       <p>A backend is correct when it passes the suite — that's what makes
       “database-agnostic” trustworthy, including for a <code>Log</code> you write.</p>
@@ -388,8 +395,40 @@ flowchart LR
   working tree (the Recorder's staged buffer <i>is</i> the index).</p>
 </section>
 
+<section id="explain">
+  <div class="eyebrow"><span class="h">04</span> two audiences</div>
+  <h2>Store for machines, render for humans.</h2>
+  <p class="lede">Change JSON is the commit-hash preimage, so display metadata is never
+  stored — it could not be backfilled, and old history would render blind forever.
+  Instead <code>kit.Explain</code> replays the chain and derives the human form at read
+  time: label trails, keyed-element identity, id → name display values, bookkeeping
+  flags, and per-field <code>ValueNode</code> breakdowns of container values. Declare the
+  schema with the same <code>DiffOption</code>s the write side uses; change them and every
+  existing commit re-renders — no stored byte moves.</p>
+<pre class="code"><code>rows, _ := chroniclekit.<span class="f">Explain</span>(commits, <span class="c">// oldest-first, same contract as Reconstruct</span>
+    chroniclekit.<span class="f">WithArrayKeys</span>(map[string]string{<span class="s">"items"</span>: <span class="s">"sku"</span>, <span class="s">"items.quantities"</span>: <span class="s">"uom"</span>}),
+    chroniclekit.<span class="f">WithNameFields</span>(<span class="s">"label"</span>, <span class="s">"name"</span>))
+<span class="c">// rows[i][j] decorates commits[i].Changes[j] — the stored Change rides along untouched</span></code></pre>
+  <div class="ledger" aria-label="The same stored change rendered for two audiences">
+    <div class="caption">one stored change — two audiences</div>
+    <div class="entry">
+      <div class="row1"><span class="msg">what the changelog stores</span><span class="tag">machine</span></div>
+      <div class="diff"><span class="path">items.0.quantities.0.qty</span>: "12" → <span class="to">"14"</span> · put · alice</div>
+    </div>
+    <div class="entry head">
+      <div class="row1"><span class="msg">what Explain derives</span><span class="tag sealed">read-time</span></div>
+      <div class="diff">Items › Quantities › Kilogram <span class="path">(kg)</span> › Qty: 12 → <span class="to">14</span></div>
+      <div class="parent">Element {Trail [Items, Quantities] · Name "Kilogram" · ID "kg"} · Field [Qty]</div>
+    </div>
+  </div>
+  <p class="mapnote">The kit emits structure — slices, names, canonical scalars, flags —
+  never formatting. Separators, truncation, verbs, colors, and folding belong to your
+  renderer: a CLI, a web app, and an email digest can all draw the same rows their own
+  way.</p>
+</section>
+
 <section id="architecture">
-  <div class="eyebrow"><span class="h">04</span> architecture</div>
+  <div class="eyebrow"><span class="h">05</span> architecture</div>
   <h2>Producers → core → any backend.</h2>
   <p class="lede">Something produces <code>Change</code>s — CRUD handlers, a message
   consumer, a state diff — a <code>Recorder</code> or the <code>Service</code> facade seals
@@ -436,14 +475,15 @@ flowchart TB
   </div>
   <p class="mapnote">The core stays wire-free. When a Go server wants batteries, the
   optional <code>kit</code> module layers them on top: state diffing, JSON-Patch
-  conversion, snapshot-backed <code>State</code>/<code>StateAt</code>, and
+  conversion, snapshot-backed <code>State</code>/<code>StateAt</code>, read-time
+  <code>Explain</code> display decoration, and
   <code>kit/httpapi</code> — a ready-made <code>http.ServeMux</code>
   (<code>POST /commits</code>, <code>GET /commits</code>, <code>GET /commits/{id}</code>,
   <code>GET /changes</code>) you mount behind your own auth and middleware.</p>
 </section>
 
 <section id="backends">
-  <div class="eyebrow"><span class="h">05</span> backends</div>
+  <div class="eyebrow"><span class="h">06</span> backends</div>
   <h2>Pick a store — or write your own.</h2>
   <p class="lede">Adapters are optional sibling modules; the core never imports one.
   Implement the 3-method <code>Log</code> yourself and prove it with

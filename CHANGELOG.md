@@ -48,25 +48,34 @@ published as per-module Go tags: `core/vX.Y.Z`, `adapters/memory/vX.Y.Z`,
   the hashed per-`Change` `At`.
 - **`kit`**: `Diff` accepts schema-declaring options (`DiffOption`):
   `WithArrayKeys` (per-array element identity as an index-free schema path →
-  dot-path into elements, `""` for a root array), `WithIgnoredFields`
-  (bookkeeping noise suppressed at every depth, no defaults),
-  `WithValueTypes` (caller-declared value-object shapes compared and recorded
-  via their canonical scalar). Arrays of objects pair by the configured key,
-  else by a unique scalar `id` on every element, else positionally; arrays of
-  scalars always pair by index. Keyed reordering alone records nothing, so
+  dot-path into elements, `""` for a root array), `WithValueTypes`
+  (caller-declared value-object shapes compared and recorded via their
+  canonical scalar). `WithIgnoredFields` names bookkeeping fields — a bare
+  name matches at any depth, an index-free schema path matches its field and
+  subtree — but does NOT affect recording: the changelog stays a full data
+  record; `Explain` flags their changes as `Bookkeeping` for displays to fold
+  away. Arrays of objects pair by the configured key, else by a unique scalar
+  `id` on every element, else positionally; arrays of scalars always pair by
+  index. Keyed reordering alone records nothing, so
   replay reproduces the element set (survivors in before order, additions
   appended), not the after ordering. `RecordUpdate` forwards these via the
   new `WithDiffOptions` record option.
 - **`kit`**: `Explain(commits, opts...)` — read-time display decoration. It
   replays the chain (same contract as `Reconstruct`) and returns per-change
-  rows `{Change, Field, Element, Display}`: the field's human label trail
+  rows `{Change, Field, Element, Display, Bookkeeping, FromValue, ToValue}`:
+  the field's human label trail
   (caller resolver via `WithLabels`, Title Case fallback), the keyed array
   element the change sits inside (`Trail`/`Name`/`ID`; whole-element
   add/remove = `Element` with empty `Field`), and display names for id-valued
   `From`/`To` resolved from id→name pairs in the surrounding revisions
-  (`WithNameFields` picks the name field). Nothing new is stored — records
-  written before this feature decorate identically, and the stored record,
-  hash preimage, and storage layers are untouched.
+  (`WithNameFields` picks the name field). Container `From`/`To` values also
+  decompose into a `ValueNode` tree (labels, element identity, canonical
+  scalars, bookkeeping marks, order — structure only, never formatting), so
+  displays can break a whole-container change down per field without
+  re-implementing the schema walk. Nothing new is stored — records written
+  before this feature decorate
+  identically, and the stored record, hash preimage, and storage layers are
+  untouched.
 
 ### Changed
 - **`kit`**: `Diff` now pairs arrays of objects by a unique scalar `id` field

@@ -75,7 +75,7 @@ func WithIdempotencyKey(key string) RecordOption {
 }
 
 // WithDiffOptions forwards schema-declaring options to the Diff inside
-// RecordUpdate (array identity, ignored fields, value types).
+// RecordUpdate (array identity, value types).
 func WithDiffOptions(opts ...DiffOption) RecordOption {
 	return func(c *recordConfig) { c.diffOpts = append(c.diffOpts, opts...) }
 }

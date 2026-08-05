@@ -83,6 +83,7 @@ write a thin transport over the `Service` facade.
 |---|---|---|---|
 | `core` | `…/chronicle/core` | **The core** (package `changelog`): `Log` port, `Recorder`, `Commit`/`Change`, capability interfaces | stdlib |
 | `core/conformance` | `…/chronicle/core/conformance` | Conformance suite every `Log` must pass | stdlib |
+| `kit` | `…/chronicle/kit` | One-stop layer (package `chroniclekit`): `Diff`/`RecordUpdate` sealing, replay reads (`State`/`StateAt`/snapshots), `Explain` read-time display decoration | stdlib |
 | `adapters/memory` | `…/chronicle/adapters/memory` | In-memory `Log` — dev / reference (package `changelogmemory`) | stdlib |
 | `adapters/sql` | `…/chronicle/adapters/sql` | Durable **MySQL** adapter — transactional, fork-free | `go-sql-driver/mysql` |
 | `adapters/clickhouse` | `…/chronicle/adapters/clickhouse` | Durable **ClickHouse** adapter — columnar, eventual | `clickhouse-go/v2` |
@@ -212,6 +213,56 @@ log, err := changelogclickhouse.Open(ctx,
 defer log.Close()
 ```
 
+## Rendering history for humans (`kit.Explain`)
+
+The stored record is machine-shaped: dotted paths and canonical-JSON scalars
+(`items.0.quantities.1.qty`, `"12" → "14"`). `chroniclekit.Explain` derives
+everything a UI needs from it at read time by replaying the chain — nothing
+extra is stored, so records written long before any schema was declared render
+exactly like new ones, and changing the options re-renders all existing
+history without touching a stored byte.
+
+```go
+import chroniclekit "github.com/zdirnecamlcs96/chronicle/kit"
+
+// One schema vocabulary, two consumers: Diff/RecordUpdate take the same
+// options on the write side (array identity shapes what is recorded).
+opts := []chroniclekit.DiffOption{
+    chroniclekit.WithArrayKeys(map[string]string{"items": "sku", "items.quantities": "uom"}),
+    chroniclekit.WithNameFields("label", "name"),
+    chroniclekit.WithLabels(myI18nResolver),              // optional; Title Case fallback
+    chroniclekit.WithIgnoredFields("updated_at", "meta.rev"),  // folded on read, never dropped:
+    // a bare name matches at any depth, a schema path only its field + subtree
+}
+
+commits, _ := svc.Commits(ctx, "doc-1", 0)   // newest-first
+slices.Reverse(commits)                      // Explain replays oldest-first
+rows, err := chroniclekit.Explain(commits, opts...)
+// rows[i][j] decorates commits[i].Changes[j] 1:1
+```
+
+Each `Explained` row embeds the stored `Change` untouched and adds display
+data:
+
+| Field | What it is | A renderer might… |
+|---|---|---|
+| `Field []string` | label trail of the changed field — element-relative when `Element` is set | join with `›` |
+| `Element` | the keyed array element the change sits in (`Trail`, `Name`, `ID`); `Element` with no `Field` = whole-element add/remove | badge — "Nuts (L2) › Qty" |
+| `Display` | id-valued `From`/`To` resolved to display names | "Dana → Lee" instead of "U7 → U2" |
+| `Bookkeeping` | the change touches a `WithIgnoredFields` entry (still recorded) | fold behind "N bookkeeping changes" |
+| `FromValue`/`ToValue` | a container value decomposed as a `ValueNode` tree — `Label`, canonical `Value`, `List`, `Bookkeeping`, `Kids` | inline "Flour, Sugar"; expandable per-field breakdown, noise folded |
+
+The contract: **the kit emits structure, never formatting.** Slices, not
+joined strings; names, not sentences; canonical scalars, not prettified text;
+flags, not decisions. Separators, truncation, pluralization, verbs, colors,
+and folding belong to the consumer — a CLI, a web app, and an email digest can
+render the same rows differently, and the kit never limits the styling.
+
+Over a wire, serialize the rows as JSON next to your other routes. A
+`POST /explain {doc, options}` endpoint that runs `Explain` server-side keeps
+browser clients free of schema logic entirely — the option vocabulary travels
+in the request, so the server stays schema-blind too.
+
 ## Exposing it over a wire
 
 chronicle is Go-only and ships no HTTP server or client SDK — exposing the facade
@@ -221,6 +272,8 @@ is a thin layer you write over `changelog.NewService`. A typical HTTP shape:
 - `GET  /commits?doc=&limit=` — a document's commits (or all, omit `doc`)
 - `GET  /commits/{id}` — one commit by id
 - `GET  /changes?doc=&limit=` — the flattened change feed
+- `POST /explain` — `{doc, options}` → commits with `Explained` display decoration
+  (see "Rendering history for humans")
 
 Each route maps to a `Service` call; the `Service` owns hashing, parent chaining,
 and idempotent dedup (an `idempotency_key` makes at-least-once delivery seal

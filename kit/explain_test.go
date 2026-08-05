@@ -64,6 +64,132 @@ func TestExplain_FieldTrails(t *testing.T) {
 	}
 }
 
+// TestExplain_BookkeepingFlag: ignored fields are recorded like any other
+// data; Explain flags their changes so displays can fold them. An entry is a
+// bare name (matched at any depth) or an index-free schema path (matching its
+// field and subtree), so a name that is bookkeeping in one branch stays data
+// in another.
+func TestExplain_BookkeepingFlag(t *testing.T) {
+	commits := commitsFor(t, []any{
+		map[string]any{
+			"status": "open",
+			"meta":   map[string]any{"rev": 1, "audit": map[string]any{"by": "u1"}},
+			"items":  []any{map[string]any{"id": "I1", "rev": "a", "updated_at": "t1"}},
+		},
+		map[string]any{
+			"status": "closed",
+			"meta":   map[string]any{"rev": 2, "audit": map[string]any{"by": "u2"}},
+			"items":  []any{map[string]any{"id": "I1", "rev": "b", "updated_at": "t2"}},
+		},
+	})
+	got, err := Explain(commits, WithIgnoredFields("updated_at", "meta.rev", "meta.audit"))
+	if err != nil {
+		t.Fatalf("explain: %v", err)
+	}
+	flags := map[string]bool{}
+	for _, rows := range got {
+		for _, r := range rows {
+			flags[r.Path] = r.Bookkeeping
+		}
+	}
+	want := map[string]bool{
+		"status":             false, // ordinary data
+		"items.0.updated_at": true,  // bare name matches at any depth
+		"meta.rev":           true,  // schema path matches its exact field
+		"meta.audit.by":      true,  // schema path covers its subtree
+		"items.0.rev":        false, // rev outside meta is data, not bookkeeping
+	}
+	for path, wantFlag := range want {
+		if flags[path] != wantFlag {
+			t.Fatalf("%s: want Bookkeeping=%v, got %v (all: %v)", path, wantFlag, flags[path], flags)
+		}
+	}
+}
+
+// TestExplain_ValueTrees: container From/To values decompose into ValueNode
+// trees under the same schema — labels, element identity, canonical scalars —
+// so displays can break a whole-container change down without re-implementing
+// the walk.
+func TestExplain_ValueTrees(t *testing.T) {
+	opts := []DiffOption{
+		WithArrayKeys(map[string]string{"items": "sku", "items.quantities": "uom"}),
+		WithNameFields("label", "name"),
+	}
+	doc := map[string]any{
+		"items": []any{
+			map[string]any{
+				"sku": "ING-1", "name": "Flour",
+				"quantities": []any{map[string]any{"uom": "kg", "label": "Kilogram", "qty": 12}},
+			},
+			map[string]any{"sku": "ING-2", "name": "Sugar", "quantities": []any{}},
+		},
+	}
+	commits := commitsFor(t, []any{doc}, opts...)
+	got, err := Explain(commits, opts...)
+	if err != nil {
+		t.Fatalf("explain: %v", err)
+	}
+	var items *Explained
+	for i, r := range got[0] {
+		if r.Path == "items" {
+			items = &got[0][i]
+		}
+	}
+	if items == nil || items.ToValue == nil || items.FromValue != nil {
+		t.Fatalf("items create needs a ToValue tree only: %+v", items)
+	}
+	root := items.ToValue
+	if !root.List || len(root.Kids) != 2 || root.Kids[0].Label != "Flour" || root.Kids[1].Label != "Sugar" {
+		t.Fatalf("array kids must carry element names: %+v", root)
+	}
+	flour := root.Kids[0]
+	var qties *ValueNode
+	for i, k := range flour.Kids {
+		if k.Label == "Quantities" {
+			qties = &flour.Kids[i]
+		}
+	}
+	if qties == nil || !qties.List || len(qties.Kids) != 1 || qties.Kids[0].Label != "Kilogram" {
+		t.Fatalf("nested keyed array must resolve identity from items.quantities: %+v", flour)
+	}
+	var qty *ValueNode
+	for i, k := range qties.Kids[0].Kids {
+		if k.Label == "Qty" {
+			qty = &qties.Kids[0].Kids[i]
+		}
+	}
+	if qty == nil || qty.Value != "12" || qty.Kids != nil {
+		t.Fatalf("leaf must carry the canonical scalar: %+v", qties.Kids[0])
+	}
+}
+
+// TestExplain_ValueTreeBookkeeping: container breakdowns carry the same
+// bookkeeping mark as rows — a kid for an ignored field (bare name or schema
+// path) is flagged so displays can fold noise inside whole-container changes.
+func TestExplain_ValueTreeBookkeeping(t *testing.T) {
+	commits := commitsFor(t, []any{
+		map[string]any{"item": map[string]any{"name": "Flour", "updated_at": "t1", "rev": 1}},
+	})
+	got, err := Explain(commits, WithIgnoredFields("updated_at", "item.rev"))
+	if err != nil {
+		t.Fatalf("explain: %v", err)
+	}
+	row := got[0][0]
+	if row.Path != "item" || row.ToValue == nil {
+		t.Fatalf("want item create with a ToValue tree: %+v", row)
+	}
+	flags := map[string]bool{}
+	for _, k := range row.ToValue.Kids {
+		flags[k.Label] = k.Bookkeeping
+	}
+	want := map[string]bool{"Name": false, "Updated At": true, "Rev": true}
+	for label, wantFlag := range want {
+		if flags[label] != wantFlag {
+			t.Fatalf("%s: want Bookkeeping=%v, got %v (all: %v)", label, wantFlag, flags[label], flags)
+		}
+	}
+}
+
 func TestExplain_PositionalIndexVerbatim(t *testing.T) {
 	commits := commitsFor(t, []any{
 		map[string]any{"tags": []any{"a", "b"}},

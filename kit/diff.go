@@ -31,11 +31,12 @@ const (
 // element SET (survivors in before order, additions appended), not the after
 // ordering; use positional arrays where order is meaningful data.
 //
-// WithIgnoredFields suppresses bookkeeping fields at every depth (never
-// recorded, so never replayed); WithValueTypes records declared value-object
-// shapes as their canonical scalar (replay yields the scalar, not the
-// object). With no options, arrays without a usable id and all other values
-// diff exactly as before.
+// WithValueTypes records declared value-object shapes as their canonical
+// scalar (replay yields the scalar, not the object). Bookkeeping fields are a
+// read-side concern: Diff records every field — the changelog is the data
+// record — and WithIgnoredFields only flags their changes on Explain. With no
+// options, arrays without a usable id and all other values diff exactly as
+// before.
 //
 // States are expected to be object- or array-rooted (the CRUD norm). A scalar
 // root produces a single change with an empty Path, which Reconstruct does not
@@ -145,9 +146,6 @@ func (d *differ) value(path, schema []string, before, after any, out *[]changelo
 
 func (d *differ) object(path, schema []string, before, after map[string]any, out *[]changelog.Change) {
 	for _, k := range unionKeys(before, after) {
-		if _, skip := d.cfg.ignored[k]; skip {
-			continue
-		}
 		bv, bok := before[k]
 		av, aok := after[k]
 		child := childPath(path, k)

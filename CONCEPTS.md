@@ -74,6 +74,25 @@ full replay.
 Historical reads (`StateAt`, `CommitSnapshot`) never refresh the snapshot: a
 read of the past must not move the HEAD cache.
 
+## Dual-audience change records
+
+One stored history, two audiences. The record stays machine-shaped — dotted
+paths, canonical-JSON scalars — because change JSON is the commit-hash
+preimage: stored display metadata could never be backfilled, and old history
+would render display-blind forever. Instead, `Explain` in
+[`kit/explain.go`](kit/explain.go) derives the human form at read time by
+replaying the chain: label trails, keyed-element identity, id→name display
+values, bookkeeping flags (a bare field name matched at any depth, or an
+index-free schema path matching its field and subtree), and per-field
+`ValueNode` breakdowns of container values. The caller's schema arrives as `DiffOption`s — the same vocabulary
+`Diff` uses on the write side — so changing labels, name fields, or ignored
+fields re-renders *all* existing history without touching a stored byte.
+
+The boundary the API holds: the kit emits structure (slices, names, canonical
+scalars, flags), never formatting (separators, truncation, pluralization,
+verbs). Presentation policy belongs to the consumer, so no UI is ever limited
+by the library.
+
 ## Cursor (keyset) pagination
 
 `TailReader.CommitsAfter(docID, afterID, limit)` — "the commits after this

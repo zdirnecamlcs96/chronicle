@@ -6,16 +6,17 @@ import "strings"
 // have element identity, which fields are bookkeeping noise, which object
 // shapes are value types, and how field names resolve to human labels. One
 // vocabulary, two consumers — Diff uses the write-shaping options (array keys,
-// ignored fields, value types); Explain uses the read-decoration options
-// (array keys, labels, name fields). The kit hardcodes no domain content.
+// value types); Explain uses the read-decoration options (array keys, labels,
+// name fields, ignored fields). The kit hardcodes no domain content.
 type DiffOption func(*diffConfig)
 
 type diffConfig struct {
-	arrayKeys  map[string]string // index-free dotted schema path of array → dot-path to identity field
-	labels     func(path []string) (string, bool)
-	ignored    map[string]struct{}
-	valueTypes []ValueType
-	nameFields []string
+	arrayKeys    map[string]string // index-free dotted schema path of array → dot-path to identity field
+	labels       func(path []string) (string, bool)
+	ignoredNames map[string]struct{} // bare entries: field name, any depth
+	ignoredPaths map[string]struct{} // dotted entries: index-free schema path
+	valueTypes   []ValueType
+	nameFields   []string
 }
 
 func newDiffConfig(opts []DiffOption) diffConfig {
@@ -44,17 +45,26 @@ func WithLabels(resolve func(path []string) (label string, ok bool)) DiffOption 
 	return func(c *diffConfig) { c.labels = resolve }
 }
 
-// WithIgnoredFields suppresses the named object fields at every depth —
-// bookkeeping noise like revision markers or created/updated stamps. Appends
-// to any earlier call; the kit ships no defaults. Suppressed fields are never
-// recorded, so replay does not reproduce them.
-func WithIgnoredFields(names ...string) DiffOption {
+// WithIgnoredFields names bookkeeping fields — revision markers,
+// created/updated stamps — to hide from the human read side. An entry is
+// either a bare field name, matched at any depth, or an index-free dotted
+// schema path (the WithArrayKeys vocabulary), matching that field and its
+// subtree — "meta.rev" folds the bookkeeping marker without touching a data
+// field also named rev elsewhere. Recording is UNAFFECTED: the changelog
+// stays a full data record and replay reproduces these fields; Explain merely
+// flags their changes as Bookkeeping so displays can fold them away. Appends
+// to any earlier call; the kit ships no defaults.
+func WithIgnoredFields(entries ...string) DiffOption {
 	return func(c *diffConfig) {
-		if c.ignored == nil {
-			c.ignored = make(map[string]struct{}, len(names))
-		}
-		for _, n := range names {
-			c.ignored[n] = struct{}{}
+		for _, e := range entries {
+			set := &c.ignoredNames
+			if strings.Contains(e, ".") {
+				set = &c.ignoredPaths
+			}
+			if *set == nil {
+				*set = make(map[string]struct{})
+			}
+			(*set)[e] = struct{}{}
 		}
 	}
 }
