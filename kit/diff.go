@@ -49,7 +49,7 @@ func Diff(before, after any, opts ...DiffOption) ([]changelog.Change, error) {
 	b, a = coerceRoot(b, a)
 	d := &differ{cfg: newDiffConfig(opts)}
 	var out []changelog.Change
-	d.value(nil, b, a, &out)
+	d.value(nil, nil, b, a, &out)
 	return out, nil
 }
 
@@ -88,7 +88,10 @@ func normalize(v any) (any, error) {
 	return out, nil
 }
 
-func (d *differ) value(path []string, before, after any, out *[]changelog.Change) {
+// value dispatches one before/after pair. path is the machine path (indices
+// included); schema is the index-free field path used for arrayKeys and label
+// lookups.
+func (d *differ) value(path, schema []string, before, after any, out *[]changelog.Change) {
 	// A declared value-object on either side compares canonically as one leaf:
 	// different encodings of the same value are not changes, and a real change
 	// records the canonical form, not the object.
@@ -108,14 +111,14 @@ func (d *differ) value(path []string, before, after any, out *[]changelog.Change
 	bObj, bIsObj := before.(map[string]any)
 	aObj, aIsObj := after.(map[string]any)
 	if bIsObj && aIsObj {
-		d.object(path, bObj, aObj, out)
+		d.object(path, schema, bObj, aObj, out)
 		return
 	}
 
 	bArr, bIsArr := before.([]any)
 	aArr, aIsArr := after.([]any)
 	if bIsArr && aIsArr {
-		d.array(path, bArr, aArr, out)
+		d.array(path, schema, bArr, aArr, out)
 		return
 	}
 
@@ -133,7 +136,7 @@ func (d *differ) value(path []string, before, after any, out *[]changelog.Change
 	}
 }
 
-func (d *differ) object(path []string, before, after map[string]any, out *[]changelog.Change) {
+func (d *differ) object(path, schema []string, before, after map[string]any, out *[]changelog.Change) {
 	for _, k := range unionKeys(before, after) {
 		if _, skip := d.cfg.ignored[k]; skip {
 			continue
@@ -143,7 +146,7 @@ func (d *differ) object(path []string, before, after map[string]any, out *[]chan
 		child := childPath(path, k)
 		switch {
 		case bok && aok:
-			d.value(child, bv, av, out)
+			d.value(child, childPath(schema, k), bv, av, out)
 		case aok: // created
 			*out = append(*out, changelog.Change{Path: joinPath(child), Kind: KindCreate, To: d.encode(av)})
 		default: // deleted
@@ -152,13 +155,20 @@ func (d *differ) object(path []string, before, after map[string]any, out *[]chan
 	}
 }
 
-func (d *differ) array(path []string, before, after []any, out *[]changelog.Change) {
+func (d *differ) array(path, schema []string, before, after []any, out *[]changelog.Change) {
+	// Arrays of objects may carry element identity (caller-declared key, else
+	// the "id" convention); everything else — and any array where identity is
+	// unusable — pairs by index.
+	if keyPath, ok := d.resolveKey(schema, before, after); ok {
+		d.keyedArray(path, schema, keyPath, before, after, out)
+		return
+	}
 	n := len(before)
 	if len(after) < n {
 		n = len(after)
 	}
 	for i := 0; i < n; i++ {
-		d.value(childPath(path, strconv.Itoa(i)), before[i], after[i], out)
+		d.value(childPath(path, strconv.Itoa(i)), schema, before[i], after[i], out)
 	}
 	for i := n; i < len(after); i++ {
 		*out = append(*out, changelog.Change{Path: joinPath(childPath(path, strconv.Itoa(i))), Kind: KindCreate, To: d.encode(after[i])})
@@ -168,6 +178,110 @@ func (d *differ) array(path []string, before, after []any, out *[]changelog.Chan
 	// shift-safe.
 	for i := len(before) - 1; i >= n; i-- {
 		*out = append(*out, changelog.Change{Path: joinPath(childPath(path, strconv.Itoa(i))), Kind: KindDelete, From: d.encode(before[i])})
+	}
+}
+
+// resolveKey picks the identity key path for the array at schema, walking the
+// chain: caller-configured key → the generic "id" convention → none
+// (positional). A candidate is usable only when every element on both sides
+// is an object holding a unique scalar at the key path; an empty side passes
+// vacuously.
+func (d *differ) resolveKey(schema []string, before, after []any) ([]string, bool) {
+	if cfgPath, ok := d.cfg.arrayKeys[joinPath(schema)]; ok {
+		kp := splitPath(cfgPath)
+		if usableKey(kp, before) && usableKey(kp, after) {
+			return kp, true
+		}
+	}
+	kp := []string{"id"}
+	if usableKey(kp, before) && usableKey(kp, after) {
+		return kp, true
+	}
+	return nil, false
+}
+
+func usableKey(keyPath []string, side []any) bool {
+	seen := make(map[string]struct{}, len(side))
+	for _, el := range side {
+		obj, isObj := el.(map[string]any)
+		if !isObj {
+			return false
+		}
+		v, ok := elemKeyValue(obj, keyPath)
+		if !ok || v == nil || isContainer(v) {
+			return false
+		}
+		k := mustJSON(v)
+		if _, dup := seen[k]; dup {
+			return false
+		}
+		seen[k] = struct{}{}
+	}
+	return true
+}
+
+// elemKeyValue walks keyPath through nested objects only (an identity path
+// never crosses an array).
+func elemKeyValue(el map[string]any, keyPath []string) (any, bool) {
+	var cur any = el
+	for _, seg := range keyPath {
+		obj, isObj := cur.(map[string]any)
+		if !isObj {
+			return nil, false
+		}
+		var ok bool
+		if cur, ok = obj[seg]; !ok {
+			return nil, false
+		}
+	}
+	return cur, true
+}
+
+// keyedArray pairs elements by identity instead of position. Reordering alone
+// is not a change; replay therefore reproduces the element SET (survivors in
+// before order, additions appended), not the after ordering. Emission order
+// is replay order: deletes by before-index descending (deleteIn shifts left),
+// then survivor edits ascending at their post-delete indices, then creates
+// appended (setIn at index == length appends).
+func (d *differ) keyedArray(path, schema, keyPath []string, before, after []any, out *[]changelog.Change) {
+	keyOf := func(el any) string {
+		v, _ := elemKeyValue(el.(map[string]any), keyPath)
+		return mustJSON(v)
+	}
+	aIdx := make(map[string]int, len(after))
+	for j, el := range after {
+		aIdx[keyOf(el)] = j
+	}
+	bKeys := make([]string, len(before))
+	bIdx := make(map[string]int, len(before))
+	for i, el := range before {
+		bKeys[i] = keyOf(el)
+		bIdx[bKeys[i]] = i
+	}
+
+	deleted := make([]bool, len(before))
+	for i := len(before) - 1; i >= 0; i-- {
+		if _, survives := aIdx[bKeys[i]]; !survives {
+			deleted[i] = true
+			*out = append(*out, changelog.Change{Path: joinPath(childPath(path, strconv.Itoa(i))), Kind: KindDelete, From: d.encode(before[i])})
+		}
+	}
+
+	removedBelow := 0
+	for i, el := range before {
+		if deleted[i] {
+			removedBelow++
+			continue
+		}
+		d.value(childPath(path, strconv.Itoa(i-removedBelow)), schema, el, after[aIdx[bKeys[i]]], out)
+	}
+
+	next := len(before) - removedBelow
+	for _, el := range after {
+		if _, existed := bIdx[keyOf(el)]; !existed {
+			*out = append(*out, changelog.Change{Path: joinPath(childPath(path, strconv.Itoa(next))), Kind: KindCreate, To: d.encode(el)})
+			next++
+		}
 	}
 }
 
