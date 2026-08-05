@@ -89,6 +89,22 @@ func normalize(v any) (any, error) {
 }
 
 func (d *differ) value(path []string, before, after any, out *[]changelog.Change) {
+	// A declared value-object on either side compares canonically as one leaf:
+	// different encodings of the same value are not changes, and a real change
+	// records the canonical form, not the object.
+	if bc, bVT := d.canonOf(before); bVT {
+		if ac := d.encode(after); bc != ac {
+			*out = append(*out, changelog.Change{Path: joinPath(path), Kind: KindPut, From: bc, To: ac})
+		}
+		return
+	}
+	if ac, aVT := d.canonOf(after); aVT {
+		if bc := mustJSON(before); bc != ac {
+			*out = append(*out, changelog.Change{Path: joinPath(path), Kind: KindPut, From: bc, To: ac})
+		}
+		return
+	}
+
 	bObj, bIsObj := before.(map[string]any)
 	aObj, aIsObj := after.(map[string]any)
 	if bIsObj && aIsObj {
@@ -129,9 +145,9 @@ func (d *differ) object(path []string, before, after map[string]any, out *[]chan
 		case bok && aok:
 			d.value(child, bv, av, out)
 		case aok: // created
-			*out = append(*out, changelog.Change{Path: joinPath(child), Kind: KindCreate, To: mustJSON(av)})
+			*out = append(*out, changelog.Change{Path: joinPath(child), Kind: KindCreate, To: d.encode(av)})
 		default: // deleted
-			*out = append(*out, changelog.Change{Path: joinPath(child), Kind: KindDelete, From: mustJSON(bv)})
+			*out = append(*out, changelog.Change{Path: joinPath(child), Kind: KindDelete, From: d.encode(bv)})
 		}
 	}
 }
@@ -145,14 +161,46 @@ func (d *differ) array(path []string, before, after []any, out *[]changelog.Chan
 		d.value(childPath(path, strconv.Itoa(i)), before[i], after[i], out)
 	}
 	for i := n; i < len(after); i++ {
-		*out = append(*out, changelog.Change{Path: joinPath(childPath(path, strconv.Itoa(i))), Kind: KindCreate, To: mustJSON(after[i])})
+		*out = append(*out, changelog.Change{Path: joinPath(childPath(path, strconv.Itoa(i))), Kind: KindCreate, To: d.encode(after[i])})
 	}
 	// Trailing deletes are emitted HIGH→LOW: deleteIn shifts later elements left,
 	// so deleting ascending would invalidate each subsequent index. Descending is
 	// shift-safe.
 	for i := len(before) - 1; i >= n; i-- {
-		*out = append(*out, changelog.Change{Path: joinPath(childPath(path, strconv.Itoa(i))), Kind: KindDelete, From: mustJSON(before[i])})
+		*out = append(*out, changelog.Change{Path: joinPath(childPath(path, strconv.Itoa(i))), Kind: KindDelete, From: d.encode(before[i])})
 	}
+}
+
+// canonOf returns the canonical scalar for v when v is an object whose key
+// set exactly matches a declared ValueType and its Canon accepts. The first
+// key-set match decides; a declined Canon means normal field-wise diffing.
+func (d *differ) canonOf(v any) (string, bool) {
+	obj, isObj := v.(map[string]any)
+	if !isObj {
+		return "", false
+	}
+outer:
+	for _, vt := range d.cfg.valueTypes {
+		if len(vt.Fields) != len(obj) {
+			continue
+		}
+		for _, f := range vt.Fields {
+			if _, present := obj[f]; !present {
+				continue outer
+			}
+		}
+		return vt.Canon(obj)
+	}
+	return "", false
+}
+
+// encode is mustJSON with value-type awareness: declared shapes encode as
+// their canonical scalar.
+func (d *differ) encode(v any) string {
+	if s, ok := d.canonOf(v); ok {
+		return s
+	}
+	return mustJSON(v)
 }
 
 // childPath returns a fresh slice path+[seg] (never aliases the parent's array).
