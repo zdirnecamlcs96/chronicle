@@ -1,0 +1,11 @@
+<header class="topbar">
+  <div class="shell topbar-inner">
+    <a class="wordmark" href="{{ '/' | relative_url }}"><span class="seal-dot" aria-hidden="true"></span>chronicle</a>
+    <nav aria-label="Sections">
+      {%- for item in site.data.nav %}
+      <a href="{{ item.url | relative_url }}">{{ item.name }}</a>
+      {%- endfor %}
+    </nav>
+    <a class="btn primary sm" href="{{ site.repo }}">GitHub&nbsp;↗</a>
+  </div>
+</header>

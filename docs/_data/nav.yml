@@ -1,0 +1,6 @@
+- { name: quick start,  url: "/#start" }
+- { name: git model,    url: "/model/" }
+- { name: concepts,     url: "/concepts/" }
+- { name: architecture, url: "/#architecture" }
+- { name: backends,     url: "/#backends" }
+- { name: operations,   url: "/operations/" }

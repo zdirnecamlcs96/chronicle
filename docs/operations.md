@@ -1,8 +1,12 @@
-# Operating chronicle in production
-
-This is the runbook for running a durable `chronicle` backend (SQL or
-ClickHouse) under real traffic. The in-memory adapter is **dev/test only** and is
-not covered here.
+---
+title: Operating chronicle in production
+permalink: /operations/
+eyebrow: operations
+source: operations.md
+summary: >-
+  The runbook for running a durable chronicle backend (SQL or ClickHouse) under
+  real traffic. The in-memory adapter is dev/test only and is not covered here.
+---
 
 ## Pick a backend by consistency model
 

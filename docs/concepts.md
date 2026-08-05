@@ -1,13 +1,19 @@
-# Concepts
-
-The design patterns and algorithms chronicle is built on, and where each one
-lives in the code. Reading order roughly follows the write → verify → read
-lifecycle.
+---
+title: Concepts
+permalink: /concepts/
+eyebrow: concepts
+source: concepts.md
+summary: >-
+  The design patterns and algorithms chronicle is built on, and where each one
+  lives in the code. Reading order roughly follows the write → verify → read
+  lifecycle.
+---
+{%- assign src = site.repo | append: '/blob/main' -%}
 
 ## Hash chain
 
 Every commit's ID is `SHA-256(parent ID, message, changes)` — see `computeID`
-in [`core/commit.go`](core/commit.go). Because the parent's ID is *inside* the
+in [`core/commit.go`]({{ src }}/core/commit.go). Because the parent's ID is *inside* the
 hash, altering any historical commit changes every ID after it: the log is
 tamper-evident, the same structure git and blockchains use. Fields are
 length-framed before hashing so no two different inputs can collide by
@@ -29,11 +35,11 @@ re-verified from content alone. Write-time dedup is NOT hash-based, though —
 `Seal` restamps change timestamps into the payload, and the anti-fork
 constraint rejects even a byte-identical re-append (`ErrParentConflict`). A
 redelivered message dedups to one commit through its idempotency key
-(`Service.Seal` + the `Deduper` capability, [`core/service.go`](core/service.go)).
+(`Service.Seal` + the `Deduper` capability, [`core/service.go`]({{ src }}/core/service.go)).
 
 ## Trusted anchor / checkpoint verification
 
-Full verification ([`core/verify.go`](core/verify.go) `Verify`) refetches and
+Full verification ([`core/verify.go`]({{ src }}/core/verify.go) `Verify`) refetches and
 rehashes the entire history — O(all commits), every run. The incremental form
 (`VerifyAfter`) exploits the chain structure: once a prefix has been verified,
 its head ID transitively attests everything behind it, so the next run needs
@@ -55,7 +61,7 @@ that.
 ## Event sourcing
 
 The storage philosophy: persist the *changes* (events), derive current state
-by replaying them. `Reconstruct` in [`kit/view.go`](kit/view.go) is the
+by replaying them. `Reconstruct` in [`kit/view.go`]({{ src }}/kit/view.go) is the
 replay; `State` is a *projection* (materialized view) of the event stream.
 Core deliberately stores only the log — every read model is derived.
 
@@ -63,9 +69,9 @@ Core deliberately stores only the log — every read model is derived.
 
 The classic event-sourcing companion pattern: cache the projection as of a
 known commit, then replay only the events after it. The `Snapshotter`
-capability ([`core/capability.go`](core/capability.go)) stores one opaque
+capability ([`core/capability.go`]({{ src }}/core/capability.go)) stores one opaque
 snapshot per document; `State`, `StateAt`, and `CommitSnapshot` in
-[`kit/view.go`](kit/view.go) all use it as a fast path, turning reads from
+[`kit/view.go`]({{ src }}/kit/view.go) all use it as a fast path, turning reads from
 O(all commits) into O(commits since snapshot). The cost is *amortized*: an
 occasional full replay primes the cache, subsequent reads are cheap. The
 snapshot is a pure cache — deleting it is always safe, readers fall back to
@@ -80,7 +86,7 @@ One stored history, two audiences. The record stays machine-shaped — dotted
 paths, canonical-JSON scalars — because change JSON is the commit-hash
 preimage: stored display metadata could never be backfilled, and old history
 would render display-blind forever. Instead, `Explain` in
-[`kit/explain.go`](kit/explain.go) derives the human form at read time by
+[`kit/explain.go`]({{ src }}/kit/explain.go) derives the human form at read time by
 replaying the chain: label trails, keyed-element identity, id→name display
 values, bookkeeping flags (a bare field name matched at any depth, or an
 index-free schema path matching its field and subtree), and per-field
@@ -99,12 +105,12 @@ by the library.
 one" — rather than OFFSET-style paging. Keyset cursors stay O(page) at any
 depth and are the primitive under both the snapshot fast path and incremental
 verification. Adapters implement it with an indexed range scan
-([`adapters/sql/capability.go`](adapters/sql/capability.go)).
+([`adapters/sql/capability.go`]({{ src }}/adapters/sql/capability.go)).
 
 ## Capability pattern (graceful degradation)
 
 Backends implement optional interfaces — `Indexer`, `TailReader`,
-`Snapshotter`, `Deduper` ([`core/capability.go`](core/capability.go)) —
+`Snapshotter`, `Deduper` ([`core/capability.go`]({{ src }}/core/capability.go)) —
 discovered by Go type assertion. A backend without a capability, or a stale
 or corrupt cache, degrades to the slower correct path (full replay), never to
 a wrong answer. This is the Go-idiomatic strategy pattern: behavior selected
@@ -115,7 +121,7 @@ at runtime by what the value can do, not by configuration.
 Writers append assuming no conflict; the backend detects a stale parent
 (`ErrParentConflict`, enforced by `UNIQUE(doc_id, parent)` in the SQL
 adapter) and `Service.Seal` retries with full-jitter exponential backoff
-([`core/service.go`](core/service.go)). Contrast with pessimistic locking:
+([`core/service.go`]({{ src }}/core/service.go)). Contrast with pessimistic locking:
 nothing is held between read and write, conflicts are resolved by retry.
 Per-document writes are still serialized — that is the intended consistency
 boundary, not a bug.
@@ -130,7 +136,7 @@ sealing a duplicate. Keys are scoped per document.
 ## Lowest common ancestor (LCA)
 
 `CommitSnapshot` scopes its output to the deepest path prefix shared by all
-of a commit's changed paths (`lcaPath`, [`kit/view.go`](kit/view.go)) — the
+of a commit's changed paths (`lcaPath`, [`kit/view.go`]({{ src }}/kit/view.go)) — the
 smallest subtree that contains the whole diff. Segment-wise longest common
 prefix, climbing to the nearest enclosing container when the LCA is a scalar.
 
@@ -140,7 +146,7 @@ Systems and paradigms chronicle borrows from — useful when explaining what it
 is, or looking up how a problem was solved elsewhere. Ranked by closeness.
 
 - **git** — the write model: stage, seal into a content-addressed commit,
-  hash-chain to the parent. See [the git model](core/MODEL.md) for the
+  hash-chain to the parent. See [the git model]({{ '/model/' | relative_url }}) for the
   side-by-side and the one deliberate divergence (commit metadata stays out of
   the hash).
   One inversion worth knowing: git stores snapshots and derives diffs;

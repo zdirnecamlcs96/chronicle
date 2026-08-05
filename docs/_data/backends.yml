@@ -1,0 +1,20 @@
+- ctor: changelogmemory.New()
+  module: adapters/memory
+  consistency: in-memory · dev/test only, lost on restart
+  conformance: "yes"
+  serializable: "no"
+  serializable_note: can fork
+
+- ctor: changelogsql.Open(…)
+  module: adapters/sql
+  consistency: transactional MySQL · <code>FOR UPDATE</code> + unique constraints
+  conformance: "yes"
+  serializable: "yes"
+  serializable_note: fork-free
+
+- ctor: changelogclickhouse.Open(…)
+  module: adapters/clickhouse
+  consistency: eventual · <code>ReplacingMergeTree</code> + <code>FINAL</code>
+  conformance: "yes"
+  serializable: "no"
+  serializable_note: no synchronous locks

@@ -1,7 +1,13 @@
-# Contributing to chronicle
+---
+title: Contributing to chronicle
+permalink: /contributing/
+eyebrow: contributing
+source: CONTRIBUTING.md
+summary: >-
+  How the codebase is shaped and the design patterns that hold it together, so
+  your changes fit the architecture and preserve its invariants.
+---
 
-This guide explains how the codebase is shaped and the design patterns that hold
-it together, so your changes fit the architecture and preserve its invariants.
 Read **The mental model** and **Core design patterns** first — they define the
 rules. **Writing an adapter** and **The kit layer** are the two most common
 extension points. **Conventions & gotchas** is the "do NOT" checklist.
@@ -23,7 +29,7 @@ chronicle is intentionally git-shaped, and the vocabulary is deliberate:
 - The **Service** (`core/service.go`) is the in-process, cross-document facade
   (`Seal`, `Commits`, `AllCommits`, `Get`) — plus producer idempotency.
 
-See `core/MODEL.md` for a side-by-side with git.
+See [the git model]({{ '/model/' | relative_url }}) for a side-by-side with git.
 
 ## Repository layout
 

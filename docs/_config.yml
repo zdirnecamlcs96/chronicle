@@ -1,0 +1,31 @@
+title: chronicle
+tagline: a git-shaped changelog for Go
+description: >-
+  A durable, database-agnostic changelog (audit-log) library for Go. Stage
+  changes, seal them into hash-chained commits, store them behind a 3-method
+  Log port.
+
+url: https://zdirnecamlcs96.github.io
+baseurl: /chronicle
+repo: https://github.com/zdirnecamlcs96/chronicle
+pkgsite: https://pkg.go.dev/github.com/zdirnecamlcs96/chronicle/core
+
+markdown: kramdown
+highlighter: rouge
+kramdown:
+  input: GFM
+  syntax_highlighter: rouge
+  syntax_highlighter_opts:
+    block:
+      line_numbers: false
+
+# Every .md page in docs/ is a rendered doc page unless it says otherwise.
+defaults:
+  - scope: { path: "", type: pages }
+    values: { layout: doc }
+
+exclude:
+  - superpowers   # gitignored local design notes; never publish
+  - Gemfile
+  - Gemfile.lock
+  - vendor

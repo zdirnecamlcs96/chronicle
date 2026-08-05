@@ -1,9 +1,13 @@
-# The git mental model
-
-`chronicle` is intentionally git-shaped: you **stage** edits, **seal**
-them into an immutable, **content-addressed** commit **hash-chained** to its
-parent, and each document keeps its own commit history like a **branch**. If you
-know git, you already know the model.
+---
+title: The git mental model
+permalink: /model/
+eyebrow: git model
+source: model.md
+summary: >-
+  chronicle is intentionally git-shaped: you stage edits, seal them into an
+  immutable, content-addressed commit hash-chained to its parent, and each
+  document keeps its own commit history like a branch.
+---
 
 ```mermaid
 flowchart LR

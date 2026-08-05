@@ -1,241 +1,10 @@
-<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>chronicle — a git-shaped changelog for Go</title>
-<meta name="description" content="A durable, database-agnostic changelog (audit-log) library for Go. Stage changes, seal them into hash-chained commits, store them behind a 3-method Log port.">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='13' fill='%23BE3A34'/%3E%3Ccircle cx='16' cy='16' r='8' fill='none' stroke='%23E9E4D8' stroke-width='2'/%3E%3C/svg%3E">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
-<style>
-:root{
-  --ink:#10141D;
-  --ink-raise:#161C29;
-  --ink-card:#141926;
-  --vellum:#E9E4D8;
-  --muted:#8B93A3;
-  --faint:#2A3140;
-  --wax:#BE3A34;
-  --wax-deep:#8E2A26;
-  --gold:#D9A441;
-  --jade:#5FA97C;
-  --display:'Fraunces',Georgia,serif;
-  --body:'IBM Plex Sans',system-ui,sans-serif;
-  --mono:'IBM Plex Mono',ui-monospace,monospace;
-}
-*{box-sizing:border-box;margin:0;padding:0}
-html{scroll-behavior:smooth}
-body{
-  background:var(--ink);
-  color:var(--vellum);
-  font-family:var(--body);
-  font-size:16.5px;
-  line-height:1.65;
-  -webkit-font-smoothing:antialiased;
-}
-a{color:inherit}
-a:focus-visible,button:focus-visible{outline:2px solid var(--gold);outline-offset:3px;border-radius:2px}
-::selection{background:var(--wax);color:var(--vellum)}
+---
+layout: default
+---
+<main class="landing">
 
-/* ---------- shell + chain spine ---------- */
-.shell{max-width:1080px;margin:0 auto;padding:0 24px;position:relative}
-@media(min-width:960px){
-  .shell{padding-left:76px}
-  .shell::before{
-    content:"";position:absolute;left:34px;top:120px;bottom:96px;width:1px;
-    background:linear-gradient(to bottom,transparent,var(--faint) 40px,var(--faint) calc(100% - 40px),transparent);
-  }
-}
-section{padding:88px 0 40px;position:relative}
-.eyebrow{
-  font-family:var(--mono);font-size:.85rem;letter-spacing:.14em;text-transform:uppercase;
-  color:var(--muted);display:flex;align-items:center;gap:.7em;margin-bottom:1.3rem;
-}
-.eyebrow .h{color:var(--gold)}
-@media(min-width:960px){
-  .eyebrow::before{
-    content:"";position:absolute;left:-47px;width:11px;height:11px;border-radius:50%;
-    background:var(--ink);border:2px solid var(--muted);margin-top:.15em;
-  }
-  section.sealed .eyebrow::before{background:var(--wax);border-color:var(--wax-deep)}
-}
-h2{
-  font-family:var(--display);font-weight:600;
-  font-size:clamp(2rem,4.2vw,2.9rem);line-height:1.15;letter-spacing:-.015em;
-  margin-bottom:1.1rem;
-}
-.lede{color:var(--muted);max-width:58ch}
-.lede b,.lede strong{color:var(--vellum);font-weight:500}
-code{font-family:var(--mono);font-size:.92em}
-p code,li code,td code{background:var(--ink-raise);border:1px solid var(--faint);border-radius:4px;padding:.08em .35em;font-size:.85em}
-
-/* ---------- header ---------- */
-header{padding:26px 0;display:flex;align-items:baseline;gap:28px;flex-wrap:wrap}
-.wordmark{font-family:var(--display);font-weight:600;font-size:1.25rem;text-decoration:none;display:flex;align-items:center;gap:.5em}
-.wordmark .seal-dot{width:.72em;height:.72em;border-radius:50%;background:var(--wax);box-shadow:inset 0 0 0 2.5px var(--wax-deep)}
-nav{margin-left:auto;display:flex;gap:22px;font-family:var(--mono);font-size:.82rem}
-nav a{color:var(--muted);text-decoration:none;padding:.2em 0}
-nav a:hover{color:var(--vellum)}
-@media(max-width:719px){
-  header{flex-direction:column;align-items:flex-start;gap:10px;padding:20px 0}
-  nav{margin-left:0;flex-wrap:wrap;gap:8px 18px}
-}
-
-/* ---------- hero ---------- */
-.hero{padding:64px 0 40px;display:grid;gap:56px;align-items:center}
-@media(min-width:900px){.hero{grid-template-columns:1.05fr .95fr;padding:88px 0 56px}}
-.hero h1{font-family:var(--display);font-weight:600;font-size:clamp(2.1rem,4.6vw,3.15rem);line-height:1.12;letter-spacing:-.01em;margin:0 0 1.1rem}
-.hero h1 em{font-style:italic;color:var(--gold)}
-.hero .sub{color:var(--muted);max-width:52ch;margin-bottom:1.8rem}
-.hero .sub b{color:var(--vellum);font-weight:500}
-.pill{
-  display:inline-flex;align-items:center;gap:.5em;font-family:var(--mono);font-size:.75rem;
-  color:var(--muted);border:1px solid var(--faint);border-radius:99px;padding:.3em 1em;margin-bottom:1.6rem;
-}
-.pill .dot{width:7px;height:7px;border-radius:50%;background:var(--gold)}
-.cta{display:flex;gap:14px;flex-wrap:wrap}
-.btn{
-  font-family:var(--mono);font-size:.86rem;text-decoration:none;border-radius:6px;
-  padding:.72em 1.35em;border:1px solid var(--faint);transition:border-color .15s,background .15s;
-}
-.btn.primary{background:var(--wax);border-color:var(--wax);color:#FCF8EF;font-weight:500}
-.btn.primary:hover{background:var(--wax-deep);border-color:var(--wax-deep)}
-.btn.ghost:hover{border-color:var(--muted)}
-
-/* ---------- hero ledger artifact ---------- */
-.ledger{font-family:var(--mono);font-size:.8rem;display:flex;flex-direction:column;position:relative}
-.ledger::before{content:"";position:absolute;left:13px;top:26px;bottom:14px;width:1px;background:var(--faint)}
-.entry{
-  background:var(--ink-card);border:1px solid var(--faint);border-radius:8px;
-  padding:14px 16px 12px 40px;position:relative;margin-bottom:14px;
-}
-.entry::before{
-  content:"";position:absolute;left:8px;top:18px;width:11px;height:11px;border-radius:50%;
-  background:var(--ink);border:2px solid var(--muted);
-}
-.entry.staged{border-style:dashed;color:var(--muted)}
-.entry.staged::before{border-color:var(--faint);background:var(--ink-card)}
-.entry.head{border-color:#3A4356;background:var(--ink-raise)}
-.entry.head::before{background:var(--wax);border-color:var(--wax-deep)}
-.entry .row1{display:flex;align-items:center;gap:.8em;margin-bottom:.35rem;flex-wrap:wrap}
-.entry .hash{color:var(--gold)}
-.entry .msg{color:var(--vellum)}
-.entry.staged .msg{color:var(--muted);font-style:italic}
-.entry .tag{margin-left:auto;font-size:.68rem;letter-spacing:.06em;color:var(--muted)}
-.entry .tag.sealed{color:var(--wax);display:inline-flex;align-items:center;gap:.45em}
-.entry .tag.sealed::before{content:"";width:.7em;height:.7em;border-radius:50%;background:var(--wax);box-shadow:inset 0 0 0 2px var(--wax-deep)}
-.entry .diff{color:var(--muted);white-space:pre-wrap}
-.entry .diff .path{color:#A9B2C4}
-.entry .diff .to{color:var(--jade)}
-.entry .parent{color:var(--muted);opacity:.65;font-size:.72rem;margin-top:.3rem}
-.ledger .caption{color:var(--muted);font-size:.72rem;padding-left:40px;opacity:.8}
-@media(prefers-reduced-motion:no-preference){
-  .entry{animation:settle .6s ease both}
-  .entry.staged{animation-delay:.9s}
-  .entry.head{animation-delay:.3s}
-  .entry.root{animation-delay:.1s}
-  .entry.head::before{animation:stamp .45s ease .75s both}
-  @keyframes settle{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
-  @keyframes stamp{0%{transform:scale(2.2);opacity:0}60%{transform:scale(.9);opacity:1}100%{transform:scale(1)}}
-}
-
-/* ---------- code blocks ---------- */
-pre.code{
-  background:var(--ink-card);border:1px solid var(--faint);border-radius:10px;
-  padding:20px 22px;overflow-x:auto;font-family:var(--mono);font-size:.82rem;line-height:1.7;
-  margin:1.4rem 0;
-}
-pre.code .c{color:var(--muted);opacity:.75}
-pre.code .s{color:var(--gold)}
-pre.code .k{color:#C97B6B}
-pre.code .f{color:#9BB4D8}
-.install{
-  font-family:var(--mono);font-size:.84rem;background:var(--ink-raise);border:1px solid var(--faint);
-  border-radius:8px;padding:.8em 1.2em;display:inline-block;
-}
-.install .p{color:var(--muted);user-select:none}
-
-/* ---------- feature grid ---------- */
-.grid{display:grid;gap:14px;margin-top:2.2rem;grid-template-columns:1fr}
-@media(min-width:640px){.grid{grid-template-columns:1fr 1fr}}
-@media(min-width:960px){.grid{grid-template-columns:1fr 1fr 1fr}}
-.card{background:var(--ink-card);border:1px solid var(--faint);border-radius:10px;padding:20px 22px}
-.card h3{font-family:var(--body);font-weight:600;font-size:.98rem;margin-bottom:.45rem}
-.card h3 code{background:none;border:none;padding:0;color:var(--gold);font-size:.85em}
-.card p{color:var(--muted);font-size:.88rem;line-height:1.6}
-.card p code{font-size:.82em}
-
-/* ---------- diagrams (mermaid) ---------- */
-.diagram{
-  background:var(--ink-card);border:1px solid var(--faint);border-radius:10px;
-  padding:26px;margin-top:2rem;overflow-x:auto;
-}
-.diagram pre.mermaid{
-  display:flex;justify-content:center;min-width:560px;
-  color:var(--muted);font-family:var(--mono);font-size:.78rem;
-}
-.diagram svg{max-width:100%;height:auto}
-.diagram .cluster rect{rx:12px}
-.diagram .node rect{rx:9px}
-/* flow animation: dashes march along every edge */
-@media(prefers-reduced-motion:no-preference){
-  .diagram .edgePaths path{stroke-dasharray:7 5;animation:flow 1.15s linear infinite}
-  @keyframes flow{to{stroke-dashoffset:-12}}
-}
-
-/* ---------- tables ---------- */
-.tablewrap{overflow-x:auto;margin-top:2rem}
-table{border-collapse:collapse;width:100%;font-size:.88rem;min-width:640px}
-th{font-family:var(--mono);font-size:.72rem;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);font-weight:500;text-align:left}
-th,td{padding:.75em .9em;border-bottom:1px solid var(--faint)}
-td{color:var(--muted)}
-td:first-child{color:var(--vellum)}
-.ok{color:var(--jade)}
-.na{opacity:.5}
-
-/* ---------- git model extras ---------- */
-.mapnote{margin-top:1.6rem;color:var(--muted);font-size:.9rem;max-width:60ch}
-.mapnote code{font-size:.82em}
-
-/* ---------- footer / root commit ---------- */
-footer{padding:110px 0 70px;position:relative}
-@media(min-width:960px){
-  footer .rootmark::before{
-    content:"";position:absolute;left:-47px;top:.3em;width:11px;height:11px;border-radius:50%;
-    background:var(--faint);border:2px solid var(--muted);
-  }
-}
-footer .rootmark{font-family:var(--mono);font-size:.78rem;color:var(--muted);position:relative;margin-bottom:1.2rem}
-footer .rootmark .h{color:var(--gold)}
-.caveats{display:grid;gap:10px;margin:1.6rem 0 2.2rem;max-width:70ch}
-.caveats li{
-  list-style:none;color:var(--muted);font-size:.88rem;padding-left:1.4em;position:relative;
-}
-.caveats li::before{content:"⚠";position:absolute;left:0;color:var(--gold);font-size:.8em;top:.25em}
-.footlinks{display:flex;gap:22px;flex-wrap:wrap;font-family:var(--mono);font-size:.8rem}
-.footlinks a{color:var(--muted)}
-.footlinks a:hover{color:var(--vellum)}
-.license{margin-top:2.4rem;color:var(--muted);font-size:.78rem;font-family:var(--mono);opacity:.7}
-</style>
-</head>
-<body>
-<div class="shell">
-
-<header>
-  <a class="wordmark" href="#"><span class="seal-dot" aria-hidden="true"></span>chronicle</a>
-  <nav aria-label="Sections">
-    <a href="#start">quick start</a>
-    <a href="#model">git model</a>
-    <a href="#explain">two audiences</a>
-    <a href="#architecture">architecture</a>
-    <a href="#backends">backends</a>
-    <a href="https://github.com/zdirnecamlcs96/chronicle">github</a>
-  </nav>
-</header>
-
-<section class="hero" aria-label="Introduction">
+<section class="hero">
+  <div class="shell heroGrid">
   <div>
     <span class="pill"><span class="dot" aria-hidden="true"></span>v0 · experimental — API may change before v1</span>
     <h1>Every change, <em>sealed</em> into a chain you can verify.</h1>
@@ -244,8 +13,8 @@ footer .rootmark .h{color:var(--gold)}
     commits hash-chained to their parents, keep a history per document.
     Store it all behind a 3-method <code>Log</code> port.</p>
     <div class="cta">
-      <a class="btn primary" href="https://pkg.go.dev/github.com/zdirnecamlcs96/chronicle/core">pkg.go.dev ↗</a>
-      <a class="btn ghost" href="https://github.com/zdirnecamlcs96/chronicle">source on GitHub ↗</a>
+      <a class="btn primary" href="{{ site.pkgsite }}">pkg.go.dev ↗</a>
+      <a class="btn" href="{{ site.repo }}">source on GitHub ↗</a>
     </div>
   </div>
   <div class="ledger" aria-label="Example commit history for document invoice-42">
@@ -269,9 +38,11 @@ footer .rootmark .h{color:var(--gold)}
       <div class="parent">parent "" — history begins at the first commit</div>
     </div>
   </div>
+  </div>
 </section>
 
 <section id="start" class="sealed">
+  <div class="shell"><div class="sectionbody">
   <div class="eyebrow"><span class="h">01</span> quick start</div>
   <h2>Stage, seal, read back.</h2>
   <p class="lede">One import for the core (<b>standard library only</b> — the package is
@@ -287,67 +58,26 @@ commit, err := rec.<span class="f">Commit</span>(ctx, changelog.<span class="f">
 
 history, _ := log.<span class="f">Commits</span>(ctx, <span class="s">"invoice-42"</span>, <span class="k">0</span>) <span class="c">// newest-first</span></code></pre>
   <p><span class="install"><span class="p">$ </span>go get github.com/zdirnecamlcs96/chronicle/core@latest</span></p>
+  </div></div>
 </section>
 
 <section id="features">
+  <div class="shell"><div class="sectionbody">
   <div class="eyebrow"><span class="h">02</span> what's in the box</div>
   <h2>Small surface, strong guarantees.</h2>
   <div class="grid">
+    {%- for f in site.data.features %}
     <div class="card">
-      <h3>Tamper-evident hash chain</h3>
-      <p><code>Commit.ID</code> is SHA-256 over length-framed parent, message, and
-      canonicalized changes. Rewrite history and <code>VerifyChain</code> breaks.</p>
+      <h3>{{ f.title }}</h3>
+      <p>{{ f.body }}</p>
     </div>
-    <div class="card">
-      <h3>One 3-method port</h3>
-      <p>The whole library hangs off <code>Log</code>: <code>AppendCommit</code>,
-      <code>Commits</code>, <code>Head</code>. Implement it and any store becomes a backend.</p>
-    </div>
-    <div class="card">
-      <h3>stdlib-only core</h3>
-      <p>The core module imports nothing beyond the standard library. Database drivers
-      live in the adapters' own <code>go.mod</code>s.</p>
-    </div>
-    <div class="card">
-      <h3>Incremental verification</h3>
-      <p><code>VerifyChainAfter</code> checks only commits past a trusted anchor —
-      no full-chain replay on every audit.</p>
-    </div>
-    <div class="card">
-      <h3>Idempotency keys</h3>
-      <p>At-least-once delivery seals exactly one commit: a retried key returns the
-      original commit instead of a duplicate.</p>
-    </div>
-    <div class="card">
-      <h3>Time travel</h3>
-      <p><code>StateAt</code> reconstructs a document at any commit, snapshot-backed —
-      O(commits since snapshot), not O(all history).</p>
-    </div>
-    <div class="card">
-      <h3>JSON-Patch interop</h3>
-      <p>The <code>kit</code> module diffs states, converts change batches to and from
-      JSON-Patch, and reconstructs state from history.</p>
-    </div>
-    <div class="card">
-      <h3>Dual-audience changes</h3>
-      <p>The record stays machine-shaped; <code>kit.Explain</code> derives label trails,
-      element names, and per-field value breakdowns at read time — structure only,
-      the styling stays yours.</p>
-    </div>
-    <div class="card">
-      <h3>Conformance as contract</h3>
-      <p>A backend is correct when it passes the suite — that's what makes
-      “database-agnostic” trustworthy, including for a <code>Log</code> you write.</p>
-    </div>
-    <div class="card">
-      <h3>Graceful degradation</h3>
-      <p>Four optional capabilities — <code>Indexer</code>, <code>Deduper</code>,
-      <code>TailReader</code>, <code>Snapshotter</code>. A backend without them still works.</p>
-    </div>
+    {%- endfor %}
   </div>
+  </div></div>
 </section>
 
 <section id="model">
+  <div class="shell"><div class="sectionbody">
   <div class="eyebrow"><span class="h">03</span> the mental model</div>
   <h2>If you know git, you already know it.</h2>
   <p class="lede">Stage with <code>Append</code>, seal with <code>Commit</code>, read with
@@ -357,7 +87,7 @@ history, _ := log.<span class="f">Commits</span>(ctx, <span class="s">"invoice-4
   chain, and verification recomputes both the hash and the author set. Retries
   dedup to a single commit through idempotency keys.</p>
   <div class="diagram" role="img" aria-label="Side-by-side mapping: git's working tree, index, commit, and branch history correspond to chronicle's Change, pending buffer, Commit, and per-document Log.">
-<pre class="mermaid">
+{% raw %}<pre class="mermaid">
 flowchart LR
     subgraph GIT["git"]
         direction TB
@@ -388,14 +118,17 @@ flowchart LR
 
     classDef seal stroke:#D9A441,stroke-width:1.5px
     class C3 seal
-</pre>
+</pre>{% endraw %}
   </div>
   <p class="mapnote">Two git reflexes that deliberately don't exist here: no
   <code>init</code> (a history begins at its first commit, <code>parent == ""</code>) and no
-  working tree (the Recorder's staged buffer <i>is</i> the index).</p>
+  working tree (the Recorder's staged buffer <i>is</i> the index). The full side-by-side
+  lives in <a href="{{ '/model/' | relative_url }}">the git model</a>.</p>
+  </div></div>
 </section>
 
 <section id="explain">
+  <div class="shell"><div class="sectionbody">
   <div class="eyebrow"><span class="h">04</span> two audiences</div>
   <h2>Store for machines, render for humans.</h2>
   <p class="lede">Change JSON is the commit-hash preimage, so display metadata is never
@@ -425,9 +158,11 @@ flowchart LR
   never formatting. Separators, truncation, verbs, colors, and folding belong to your
   renderer: a CLI, a web app, and an email digest can all draw the same rows their own
   way.</p>
+  </div></div>
 </section>
 
 <section id="architecture">
+  <div class="shell"><div class="sectionbody">
   <div class="eyebrow"><span class="h">05</span> architecture</div>
   <h2>Producers → core → any backend.</h2>
   <p class="lede">Something produces <code>Change</code>s — CRUD handlers, a message
@@ -435,7 +170,7 @@ flowchart LR
   them, and the commit lands in whatever <code>Log</code> you picked. The conformance suite
   validates every backend against the same contract.</p>
   <div class="diagram" role="img" aria-label="Layers: your app produces changes; the stdlib-only core seals them through the Recorder or Service facade into the 3-method Log port; commits land in the memory, MySQL, or ClickHouse adapter, all validated by the conformance suite.">
-<pre class="mermaid">
+{% raw %}<pre class="mermaid">
 flowchart TB
     subgraph L1["producers — anything that emits changes"]
         APP["your app&lt;br/&gt;CRUD handlers · message consumer · state diff"]
@@ -467,11 +202,11 @@ flowchart TB
     SQL -. validated by .-> CONF
     CH -. validated by .-> CONF
 
-    classDef port fill:#1A2130,stroke:#D9A441,stroke-width:1.5px,color:#E9E4D8
+    classDef port fill:#141414,stroke:#D9A441,stroke-width:1.5px,color:#FAFAFA
     classDef conf fill:transparent,stroke:#5FA97C,stroke-dasharray:5 4,color:#5FA97C
     class PORT port
     class CONF conf
-</pre>
+</pre>{% endraw %}
   </div>
   <p class="mapnote">The core stays wire-free. When a Go server wants batteries, the
   optional <code>kit</code> module layers them on top: state diffing, JSON-Patch
@@ -480,9 +215,11 @@ flowchart TB
   <code>kit/httpapi</code> — a ready-made <code>http.ServeMux</code>
   (<code>POST /commits</code>, <code>GET /commits</code>, <code>GET /commits/{id}</code>,
   <code>GET /changes</code>) you mount behind your own auth and middleware.</p>
+  </div></div>
 </section>
 
 <section id="backends">
+  <div class="shell"><div class="sectionbody">
   <div class="eyebrow"><span class="h">06</span> backends</div>
   <h2>Pick a store — or write your own.</h2>
   <p class="lede">Adapters are optional sibling modules; the core never imports one.
@@ -494,27 +231,19 @@ flowchart TB
       <tr><th>Backend</th><th>Module</th><th>Consistency</th><th>Log conformance</th><th>Serializable append</th></tr>
     </thead>
     <tbody>
+      {%- for b in site.data.backends %}
       <tr>
-        <td><code>changelogmemory.New()</code></td>
-        <td><code>adapters/memory</code></td>
-        <td>in-memory · dev/test only, lost on restart</td>
+        <td><code>{{ b.ctor }}</code></td>
+        <td><code>{{ b.module }}</code></td>
+        <td>{{ b.consistency }}</td>
         <td class="ok">✓</td>
-        <td class="na">— can fork</td>
+        {%- if b.serializable == "yes" %}
+        <td class="ok">✓ {{ b.serializable_note }}</td>
+        {%- else %}
+        <td class="na">— {{ b.serializable_note }}</td>
+        {%- endif %}
       </tr>
-      <tr>
-        <td><code>changelogsql.Open(…)</code></td>
-        <td><code>adapters/sql</code></td>
-        <td>transactional MySQL · <code>FOR UPDATE</code> + unique constraints</td>
-        <td class="ok">✓</td>
-        <td class="ok">✓ fork-free</td>
-      </tr>
-      <tr>
-        <td><code>changelogclickhouse.Open(…)</code></td>
-        <td><code>adapters/clickhouse</code></td>
-        <td>eventual · <code>ReplacingMergeTree</code> + <code>FINAL</code></td>
-        <td class="ok">✓</td>
-        <td class="na">— no synchronous locks</td>
-      </tr>
+      {%- endfor %}
     </tbody>
   </table>
   </div>
@@ -522,54 +251,8 @@ flowchart TB
   linear chain per document; <code>adapters/clickhouse</code> for cheap columnar retention
   and analytics where producers serialize per document. Operational details — pool
   tuning, the ClickHouse <code>FINAL</code> cost, migrations, backup/restore — live in
-  <a href="https://github.com/zdirnecamlcs96/chronicle/blob/main/OPERATIONS.md">OPERATIONS.md</a>.</p>
+  <a href="{{ '/operations/' | relative_url }}">operations</a>.</p>
+  </div></div>
 </section>
 
-<footer>
-  <div class="rootmark">you've reached the root commit — <span class="h">parent ""</span>, where every history begins</div>
-  <h2>Read it before you run it.</h2>
-  <ul class="caveats">
-    <li><b>v0, experimental.</b> Pin a specific module version; modules are versioned
-    independently (<code>core/vX.Y.Z</code>, <code>adapters/sql/vX.Y.Z</code>, …).</li>
-    <li>The memory adapter is <b>reference/test only</b> — never production.</li>
-    <li>The <code>kit/httpapi</code> layer ships <b>no authentication, authorization, or rate
-    limiting</b> — those are the deployer's responsibility. Review against your own
-    threat model before exposing it to untrusted input.</li>
-  </ul>
-  <div class="footlinks">
-    <a href="https://pkg.go.dev/github.com/zdirnecamlcs96/chronicle/core">pkg.go.dev</a>
-    <a href="https://github.com/zdirnecamlcs96/chronicle">GitHub</a>
-    <a href="https://github.com/zdirnecamlcs96/chronicle/blob/main/CONCEPTS.md">CONCEPTS.md</a>
-    <a href="https://github.com/zdirnecamlcs96/chronicle/blob/main/OPERATIONS.md">OPERATIONS.md</a>
-    <a href="https://github.com/zdirnecamlcs96/chronicle/blob/main/CONTRIBUTING.md">CONTRIBUTING.md</a>
-  </div>
-  <p class="license">MIT license · github.com/zdirnecamlcs96/chronicle</p>
-</footer>
-
-</div>
-
-<script src="https://cdn.jsdelivr.net/npm/mermaid@11.16.1/dist/mermaid.min.js" integrity="sha384-aBQXj4hK6Jm05i7aQAsUV3bLdSUrHX1BGYfMB0166TtWt/RRaw+h0Eelme9OCOvy" crossorigin="anonymous"></script>
-<script>
-mermaid.initialize({
-  startOnLoad: true,
-  theme: 'base',
-  fontFamily: "'IBM Plex Mono', ui-monospace, monospace",
-  flowchart: { curve: 'basis' },
-  themeVariables: {
-    background: '#141926',
-    primaryColor: '#1A2130',
-    primaryTextColor: '#E9E4D8',
-    primaryBorderColor: '#3A4356',
-    secondaryColor: '#1A2130',
-    tertiaryColor: '#161C29',
-    lineColor: '#5A6375',
-    textColor: '#8B93A3',
-    clusterBkg: '#10141D',
-    clusterBorder: '#2A3140',
-    edgeLabelBackground: '#141926',
-    fontSize: '13px'
-  }
-});
-</script>
-</body>
-</html>
+</main>

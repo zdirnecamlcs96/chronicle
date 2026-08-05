@@ -17,7 +17,7 @@
 //                under adapters/. There is no "init" — a document's history begins
 //                at its first commit (parent == "").
 //
-// In short: the Recorder writes (stage → seal), the Log stores. See core/MODEL.md
+// In short: the Recorder writes (stage → seal), the Log stores. See docs/model.md
 // for a side-by-side diagram with git.
 //
 // The core is generic and standard-library only: feed it by calling
