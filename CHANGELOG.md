@@ -8,7 +8,7 @@ Modules are versioned in lockstep. A single version covers every module and is
 published as per-module Go tags: `core/vX.Y.Z`, `adapters/memory/vX.Y.Z`,
 `adapters/sql/vX.Y.Z`, `adapters/clickhouse/vX.Y.Z`, and `kit/vX.Y.Z`.
 
-## [Unreleased]
+## [0.2.0] - 2026-08-05
 
 ### Added
 - **`core`**: chain verification — `VerifyChain(commits)` / `Verify(ctx, log, docID)`
@@ -124,6 +124,7 @@ published as per-module Go tags: `core/vX.Y.Z`, `adapters/memory/vX.Y.Z`,
 - Initial release: `chronicle`, a durable, database-agnostic changelog library
   for Go — `core` plus `memory`, `sql`, and `clickhouse` adapters.
 
+[0.2.0]: https://github.com/zdirnecamlcs96/chronicle/releases/tag/core%2Fv0.2.0
 [0.1.2]: https://github.com/zdirnecamlcs96/chronicle/releases/tag/core%2Fv0.1.2
 [0.1.1]: https://github.com/zdirnecamlcs96/chronicle/releases/tag/core%2Fv0.1.1
 [0.1.0]: https://github.com/zdirnecamlcs96/chronicle/releases/tag/core%2Fv0.1.0
