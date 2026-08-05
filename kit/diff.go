@@ -29,7 +29,11 @@ const (
 // States are expected to be object- or array-rooted (the CRUD norm). A scalar
 // root produces a single change with an empty Path, which Reconstruct does not
 // apply; diff object/array documents.
-func Diff(before, after any) ([]changelog.Change, error) {
+//
+// Options declare the caller's schema (array identity, ignored bookkeeping
+// fields, value-object shapes — see DiffOption); with none, behavior is
+// exactly the zero-option legacy diff.
+func Diff(before, after any, opts ...DiffOption) ([]changelog.Change, error) {
 	b, err := normalize(before)
 	if err != nil {
 		return nil, err
@@ -43,9 +47,15 @@ func Diff(before, after any) ([]changelog.Change, error) {
 	// is NOT coerced here — it flows through diffValue's leaf branch as a put to/from
 	// "null", preserving null as a distinct value.
 	b, a = coerceRoot(b, a)
+	d := &differ{cfg: newDiffConfig(opts)}
 	var out []changelog.Change
-	diffValue(nil, b, a, &out)
+	d.value(nil, b, a, &out)
 	return out, nil
+}
+
+// differ carries the caller-declared schema through the walk.
+type differ struct {
+	cfg diffConfig
 }
 
 func coerceRoot(before, after any) (any, any) {
@@ -78,18 +88,18 @@ func normalize(v any) (any, error) {
 	return out, nil
 }
 
-func diffValue(path []string, before, after any, out *[]changelog.Change) {
+func (d *differ) value(path []string, before, after any, out *[]changelog.Change) {
 	bObj, bIsObj := before.(map[string]any)
 	aObj, aIsObj := after.(map[string]any)
 	if bIsObj && aIsObj {
-		diffObject(path, bObj, aObj, out)
+		d.object(path, bObj, aObj, out)
 		return
 	}
 
 	bArr, bIsArr := before.([]any)
 	aArr, aIsArr := after.([]any)
 	if bIsArr && aIsArr {
-		diffArray(path, bArr, aArr, out)
+		d.array(path, bArr, aArr, out)
 		return
 	}
 
@@ -107,14 +117,14 @@ func diffValue(path []string, before, after any, out *[]changelog.Change) {
 	}
 }
 
-func diffObject(path []string, before, after map[string]any, out *[]changelog.Change) {
+func (d *differ) object(path []string, before, after map[string]any, out *[]changelog.Change) {
 	for _, k := range unionKeys(before, after) {
 		bv, bok := before[k]
 		av, aok := after[k]
 		child := childPath(path, k)
 		switch {
 		case bok && aok:
-			diffValue(child, bv, av, out)
+			d.value(child, bv, av, out)
 		case aok: // created
 			*out = append(*out, changelog.Change{Path: joinPath(child), Kind: KindCreate, To: mustJSON(av)})
 		default: // deleted
@@ -123,13 +133,13 @@ func diffObject(path []string, before, after map[string]any, out *[]changelog.Ch
 	}
 }
 
-func diffArray(path []string, before, after []any, out *[]changelog.Change) {
+func (d *differ) array(path []string, before, after []any, out *[]changelog.Change) {
 	n := len(before)
 	if len(after) < n {
 		n = len(after)
 	}
 	for i := 0; i < n; i++ {
-		diffValue(childPath(path, strconv.Itoa(i)), before[i], after[i], out)
+		d.value(childPath(path, strconv.Itoa(i)), before[i], after[i], out)
 	}
 	for i := n; i < len(after); i++ {
 		*out = append(*out, changelog.Change{Path: joinPath(childPath(path, strconv.Itoa(i))), Kind: KindCreate, To: mustJSON(after[i])})
