@@ -229,10 +229,14 @@ import chroniclekit "github.com/zdirnecamlcs96/chronicle/kit"
 // options on the write side (array identity shapes what is recorded).
 opts := []chroniclekit.DiffOption{
     chroniclekit.WithArrayKeys(map[string]string{"items": "sku", "items.quantities": "uom"}),
+    chroniclekit.WithIdentityFields("id"),                // identity for arrays not named above;
+    // no default — the kit guesses no field names, and identity shapes what is RECORDED
     chroniclekit.WithNameFields("label", "name"),
     chroniclekit.WithLabels(myI18nResolver),              // optional; Title Case fallback
     chroniclekit.WithIgnoredFields("updated_at", "meta.rev"),  // folded on read, never dropped:
     // a bare name matches at any depth, a schema path only its field + subtree
+    chroniclekit.WithNames(map[string]string{"t1": "Fragile"}), // read-side only: names for ids
+    // whose entities live outside the document; names found in the document win
 }
 
 commits, _ := svc.Commits(ctx, "doc-1", 0)   // newest-first
@@ -250,7 +254,7 @@ data:
 | `Element` | the keyed array element the change sits in (`Trail`, `Name`, `ID`); `Element` with no `Field` = whole-element add/remove | badge — "Nuts (L2) › Qty" |
 | `Display` | id-valued `From`/`To` resolved to display names | "Dana → Lee" instead of "U7 → U2" |
 | `Bookkeeping` | the change touches a `WithIgnoredFields` entry (still recorded) | fold behind "N bookkeeping changes" |
-| `FromValue`/`ToValue` | a container value decomposed as a `ValueNode` tree — `Label`, canonical `Value`, `List`, `Bookkeeping`, `Kids` | inline "Flour, Sugar"; expandable per-field breakdown, noise folded |
+| `FromValue`/`ToValue` | a container value decomposed as a `ValueNode` tree — `Label`, canonical `Value`, resolved `Display`, `List`, `Bookkeeping`, `Kids` | inline "Flour, Sugar"; expandable per-field breakdown, noise folded; id leaves show the name, keep the id |
 
 The contract: **the kit emits structure, never formatting.** Slices, not
 joined strings; names, not sentences; canonical scalars, not prettified text;
@@ -262,6 +266,12 @@ Over a wire, serialize the rows as JSON next to your other routes. A
 `POST /explain {doc, options}` endpoint that runs `Explain` server-side keeps
 browser clients free of schema logic entirely — the option vocabulary travels
 in the request, so the server stays schema-blind too.
+
+**The whole flow, start to end** — declaring a schema, recording with it,
+replaying it into rendered rows — is walked through in
+[docs: the kit, end to end](https://zdirnecamlcs96.github.io/chronicle/kit/),
+backed by the runnable `Example_explain` in `kit/example_test.go` whose output
+`go test` verifies.
 
 ## Exposing it over a wire
 

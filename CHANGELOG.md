@@ -8,6 +8,40 @@ Modules are versioned in lockstep. A single version covers every module and is
 published as per-module Go tags: `core/vX.Y.Z`, `adapters/memory/vX.Y.Z`,
 `adapters/sql/vX.Y.Z`, `adapters/clickhouse/vX.Y.Z`, and `kit/vX.Y.Z`.
 
+## [Unreleased]
+
+Next tag is 0.3.0 — the identity change below is breaking.
+
+### Changed
+- **`kit`**: **BREAKING** — the generic `"id"` element-identity convention is
+  now caller-declared via `WithIdentityFields(fields...)`. The kit ships no
+  default: an array with neither a `WithArrayKeys` entry nor a usable declared
+  generic field pairs positionally. This alters what `Diff` RECORDS, so declare
+  it before the first write and keep it stable — a later declaration cannot
+  re-key commits already sealed. `WithIdentityFields("id")` restores the
+  previous behaviour exactly.
+
+### Fixed
+- **`kit`**: an array whose identity is a dot-path (`{"lines":
+  "product.id"}`) now takes its element display name from the object that path
+  descends into, falling back to the element root's name fields, the id→name
+  index, then the identity value. Previously only the element root was tried,
+  so an element embedding its entity rendered as a raw id. The same rule names
+  the root of a whole-element `ValueNode` tree, which previously came back
+  unnamed. A single-segment key path is unaffected. The id→name index itself is
+  always keyed by the object the identity belongs to, so an element's own name
+  is never filed against an id it merely carries.
+
+### Added
+- **`kit`**: `WithNames(map[string]string)` seeds the id→name index with pairs
+  the replayed document cannot supply — ids referencing entities stored outside
+  it. Keys normalise from plain or canonical-JSON form; document-derived names
+  win. Data, not a resolver, so a schema declared in one process survives
+  serialisation to another.
+- **`kit`**: `ValueNode.Display` carries the resolved name when a leaf's
+  `Value` is a known id, `""` otherwise. `Value` stays the canonical record and
+  is never overwritten, so a display can show the name and keep the id.
+
 ## [0.2.0] - 2026-08-05
 
 ### Added

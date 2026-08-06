@@ -186,23 +186,33 @@ func (d *differ) array(path, schema []string, before, after []any, out *[]change
 	}
 }
 
-// resolveKey picks the identity key path for the array at schema, walking the
-// chain: caller-configured key → the generic "id" convention → none
-// (positional). A candidate is usable only when every element on both sides
-// is an object holding a unique scalar at the key path; an empty side passes
-// vacuously.
-func (d *differ) resolveKey(schema []string, before, after []any) ([]string, bool) {
-	if cfgPath, ok := d.cfg.arrayKeys[joinPath(schema)]; ok {
-		kp := splitPath(cfgPath)
-		if usableKey(kp, before) && usableKey(kp, after) {
+// identityKey walks the identity chain for the array at schema:
+// caller-configured key → each WithIdentityFields entry in order → none
+// (positional). usable decides whether a candidate holds for the sides in
+// play, which is the only thing the write and read sides disagree about.
+func identityKey(cfg *diffConfig, schema []string, usable func(keyPath []string) bool) ([]string, bool) {
+	if cfgPath, ok := cfg.arrayKeys[joinPath(schema)]; ok {
+		if kp := splitPath(cfgPath); usable(kp) {
 			return kp, true
 		}
 	}
-	kp := []string{"id"}
-	if usableKey(kp, before) && usableKey(kp, after) {
-		return kp, true
+	for _, f := range cfg.identityFields {
+		if kp := []string{f}; usable(kp) {
+			return kp, true
+		}
 	}
 	return nil, false
+}
+
+// resolveKey is the write-time identity chain for the array at schema. A
+// candidate is usable only when every element on BOTH sides is an object
+// holding a unique scalar at the key path; an empty side passes vacuously.
+// The result shapes what is recorded, so it must never depend on anything the
+// caller did not declare.
+func (d *differ) resolveKey(schema []string, before, after []any) ([]string, bool) {
+	return identityKey(&d.cfg, schema, func(kp []string) bool {
+		return usableKey(kp, before) && usableKey(kp, after)
+	})
 }
 
 func usableKey(keyPath []string, side []any) bool {

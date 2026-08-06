@@ -141,6 +141,9 @@ func el(id string, qty int) map[string]any {
 
 var linesKey = WithArrayKeys(map[string]string{"lines": "product.id"})
 
+// idKey declares the generic "id" identity the kit no longer assumes.
+var idKey = WithIdentityFields("id")
+
 func TestDiff_KeyedArray_Edit(t *testing.T) {
 	got, err := Diff(lines(el("P1", 1), el("P2", 5)), lines(el("P1", 3), el("P2", 5)), linesKey)
 	if err != nil {
@@ -197,8 +200,8 @@ func TestDiff_KeyedArray_AddRemove(t *testing.T) {
 }
 
 func TestDiff_KeyedArray_ResolutionChain(t *testing.T) {
-	// Configured key beats the id convention: pairing by "k" vs by "id" yields
-	// different changed paths.
+	// Configured key beats the declared generic identity: pairing by "k" vs by
+	// "id" yields different changed paths.
 	before := map[string]any{"arr": []any{
 		map[string]any{"k": "a", "id": "1"},
 		map[string]any{"k": "b", "id": "2"},
@@ -207,7 +210,7 @@ func TestDiff_KeyedArray_ResolutionChain(t *testing.T) {
 		map[string]any{"k": "b", "id": "1"},
 		map[string]any{"k": "a", "id": "2"},
 	}}
-	byK, err := Diff(before, after, WithArrayKeys(map[string]string{"arr": "k"}))
+	byK, err := Diff(before, after, WithArrayKeys(map[string]string{"arr": "k"}), idKey)
 	if err != nil {
 		t.Fatalf("diff: %v", err)
 	}
@@ -216,7 +219,7 @@ func TestDiff_KeyedArray_ResolutionChain(t *testing.T) {
 			t.Fatalf("configured key must pair by k (changes on .id), got %+v", byK)
 		}
 	}
-	byID, err := Diff(before, after) // falls to the id convention
+	byID, err := Diff(before, after, idKey) // falls to the declared generic identity
 	if err != nil {
 		t.Fatalf("diff: %v", err)
 	}
@@ -226,12 +229,12 @@ func TestDiff_KeyedArray_ResolutionChain(t *testing.T) {
 		}
 	}
 
-	// Configured key missing a value on an element -> falls to id convention
-	// (elements here carry a top-level id, which the convention requires).
+	// Configured key missing a value on an element -> falls to the declared
+	// generic identity (elements here carry a top-level id).
 	fell, err := Diff(
 		map[string]any{"lines": []any{map[string]any{"id": "P1", "qty": 1}, map[string]any{"id": "P2", "qty": 2}}},
 		map[string]any{"lines": []any{map[string]any{"id": "P2", "qty": 2}, map[string]any{"id": "P1", "qty": 1}}},
-		WithArrayKeys(map[string]string{"lines": "sku"}))
+		WithArrayKeys(map[string]string{"lines": "sku"}), idKey)
 	if err != nil {
 		t.Fatalf("diff: %v", err)
 	}
@@ -239,15 +242,45 @@ func TestDiff_KeyedArray_ResolutionChain(t *testing.T) {
 		t.Fatalf("missing configured key must fall to id (reorder silent), got %+v", fell)
 	}
 
-	// Duplicate ids on one side -> positional.
+	// Duplicate ids on one side -> positional even though id is declared.
 	dup, err := Diff(
 		map[string]any{"arr": []any{map[string]any{"id": "x", "v": 1}, map[string]any{"id": "x", "v": 2}}},
-		map[string]any{"arr": []any{map[string]any{"id": "x", "v": 2}, map[string]any{"id": "x", "v": 1}}})
+		map[string]any{"arr": []any{map[string]any{"id": "x", "v": 2}, map[string]any{"id": "x", "v": 1}}},
+		idKey)
 	if err != nil {
 		t.Fatalf("diff: %v", err)
 	}
 	if len(dup) == 0 {
 		t.Fatalf("duplicate ids must fall to positional (reorder surfaces)")
+	}
+}
+
+// TestDiff_IdentityFields_NoDefault: the kit knows no field names, so an array
+// of objects carrying "id" pairs positionally — a reorder surfaces as content
+// changes — until the caller declares that field. Identity shapes what is
+// recorded, so the kit never guesses it.
+func TestDiff_IdentityFields_NoDefault(t *testing.T) {
+	before := map[string]any{"arr": []any{
+		map[string]any{"id": "a", "v": 1},
+		map[string]any{"id": "b", "v": 2},
+	}}
+	after := map[string]any{"arr": []any{
+		map[string]any{"id": "b", "v": 2},
+		map[string]any{"id": "a", "v": 1},
+	}}
+	undeclared, err := Diff(before, after)
+	if err != nil {
+		t.Fatalf("diff: %v", err)
+	}
+	if len(undeclared) == 0 {
+		t.Fatalf("undeclared identity must pair positionally (reorder surfaces)")
+	}
+	declared, err := Diff(before, after, idKey)
+	if err != nil {
+		t.Fatalf("diff: %v", err)
+	}
+	if len(declared) != 0 {
+		t.Fatalf("declared identity must make the reorder silent, got %+v", declared)
 	}
 }
 
@@ -278,7 +311,8 @@ func TestDiff_ScalarArraysPositional(t *testing.T) {
 	// Mixed object/scalar elements: no identity possible -> positional.
 	mixed, err := Diff(
 		map[string]any{"arr": []any{map[string]any{"id": "x"}, "s"}},
-		map[string]any{"arr": []any{"s", map[string]any{"id": "x"}}})
+		map[string]any{"arr": []any{"s", map[string]any{"id": "x"}}},
+		idKey)
 	if err != nil {
 		t.Fatalf("diff: %v", err)
 	}

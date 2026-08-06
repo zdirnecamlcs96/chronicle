@@ -6,17 +6,20 @@ import "strings"
 // have element identity, which fields are bookkeeping noise, which object
 // shapes are value types, and how field names resolve to human labels. One
 // vocabulary, two consumers — Diff uses the write-shaping options (array keys,
-// value types); Explain uses the read-decoration options (array keys, labels,
-// name fields, ignored fields). The kit hardcodes no domain content.
+// identity fields, value types); Explain uses the read-decoration options
+// (array keys, identity fields, labels, name fields, names, ignored fields).
+// The kit hardcodes no domain content.
 type DiffOption func(*diffConfig)
 
 type diffConfig struct {
-	arrayKeys    map[string]string // index-free dotted schema path of array → dot-path to identity field
-	labels       func(path []string) (string, bool)
-	ignoredNames map[string]struct{} // bare entries: field name, any depth
-	ignoredPaths map[string]struct{} // dotted entries: index-free schema path
-	valueTypes   []ValueType
-	nameFields   []string
+	arrayKeys      map[string]string // index-free dotted schema path of array → dot-path to identity field
+	identityFields []string          // generic element identity, tried in order; no default
+	labels         func(path []string) (string, bool)
+	ignoredNames   map[string]struct{} // bare entries: field name, any depth
+	ignoredPaths   map[string]struct{} // dotted entries: index-free schema path
+	valueTypes     []ValueType
+	nameFields     []string
+	names          map[string]string // caller-seeded id→name, canonical-JSON keys
 }
 
 func newDiffConfig(opts []DiffOption) diffConfig {
@@ -31,10 +34,21 @@ func newDiffConfig(opts []DiffOption) diffConfig {
 // index-free dotted field path in the document ("" for a root-level array),
 // mapping to a dot-path into each element, e.g.
 // {"lines": "product.id", "approvers": "userId"}. Arrays without a usable
-// declared key fall back to an "id" field on every element, then to
-// positional (index) pairing.
+// declared key fall back to WithIdentityFields, then to positional (index)
+// pairing.
 func WithArrayKeys(keys map[string]string) DiffOption {
 	return func(c *diffConfig) { c.arrayKeys = keys }
+}
+
+// WithIdentityFields declares the fields tried, in order, as an array's
+// generic element identity — the fallback for arrays WithArrayKeys does not
+// name, e.g. WithIdentityFields("id"). The kit ships NO default: it knows no
+// field names, so an array with neither a declared key nor a usable generic
+// field pairs positionally. Identity shapes what is RECORDED, so a declaration
+// made after the fact cannot re-key commits already sealed; declare it before
+// the first write and keep it stable. Replaces any earlier call.
+func WithIdentityFields(fields ...string) DiffOption {
+	return func(c *diffConfig) { c.identityFields = fields }
 }
 
 // WithLabels installs the caller's label resolver. It receives the index-free
@@ -78,6 +92,34 @@ func WithValueTypes(vts ...ValueType) DiffOption {
 // order, for an element's display name.
 func WithNameFields(names ...string) DiffOption {
 	return func(c *diffConfig) { c.nameFields = names }
+}
+
+// WithNames seeds the id→name index with pairs the replayed document cannot
+// supply — ids referencing entities stored outside it. Keys are ids as the
+// caller holds them, plain or already canonical-JSON; both normalise to the
+// same entry. Names found in the replayed revisions WIN, so a stale dictionary
+// can never override the document. Read-side only: nothing here is recorded,
+// and Diff ignores it. Data, not a resolver — a schema declared in one process
+// must survive serialisation to another. Appends to any earlier call.
+func WithNames(names map[string]string) DiffOption {
+	return func(c *diffConfig) {
+		if c.names == nil {
+			c.names = make(map[string]string, len(names))
+		}
+		for id, n := range names {
+			c.names[canonID(id)] = n
+		}
+	}
+}
+
+// canonID encodes a caller-supplied id the way the id→name index keys it:
+// canonical JSON. A plain "u1" and an already-encoded `"u1"` land on the same
+// key, so callers never have to guess the encoding.
+func canonID(id string) string {
+	if v := parseJSON(id); v != nil && !isContainer(v) {
+		return mustJSON(v)
+	}
+	return mustJSON(id)
 }
 
 // ValueType is a caller-declared value-object shape (e.g. a decimal or money

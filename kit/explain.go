@@ -3,6 +3,7 @@ package chroniclekit
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"sort"
 	"strconv"
 
@@ -57,6 +58,10 @@ type Explained struct {
 //     index, index when identity is unusable), or — on the root — the
 //     value's own display name when it has one ("" otherwise).
 //   - Value  the canonical-JSON scalar at a leaf; "" on containers.
+//   - Display the resolved name when Value is a known id — a name found in the
+//     replayed revisions or a WithNames pair; "" otherwise. Value stays the
+//     record and is never overwritten, so a display can show the name and keep
+//     the id.
 //   - List   true when the node is an array (kids are elements, in order);
 //     false when it is an object (kids are fields, sorted by name).
 //   - Bookkeeping  true when the node's field is a WithIgnoredFields entry —
@@ -65,6 +70,7 @@ type Explained struct {
 type ValueNode struct {
 	Label       string
 	Value       string
+	Display     string
 	List        bool
 	Bookkeeping bool
 	Kids        []ValueNode
@@ -75,13 +81,14 @@ type ValueNode struct {
 // derived from the replayed revisions, records written long before any schema
 // was declared decorate exactly like new ones; nothing is stored.
 //
-// Options declare the caller's schema: WithArrayKeys/the id convention give
+// Options declare the caller's schema: WithArrayKeys/WithIdentityFields give
 // array elements identity, WithLabels supplies i18n labels (Title Case
 // fallback), WithNameFields picks the element display-name field, and
 // WithIgnoredFields flags bookkeeping changes (Bookkeeping) for displays to
 // fold away — the stored record always keeps them. Display names come from
 // id→name pairs found in either revision surrounding each commit (the after
-// revision wins conflicts).
+// revision wins conflicts), over any WithNames dictionary the caller supplies
+// for ids whose entities live outside the document.
 //
 // Result rows align 1:1 with commits and their Changes.
 //
@@ -93,6 +100,7 @@ func Explain(commits []changelog.Commit, opts ...DiffOption) ([][]Explained, err
 	var cur any // nil root so the first change vivifies object or array docs alike
 	for i, c := range commits {
 		names := map[string]string{}
+		maps.Copy(names, cfg.names) // WithNames seeds; the document overwrites
 		walkNames(&cfg, cur, nil, names)
 		after, err := normalize(cur) // deep copy
 		if err != nil {
@@ -146,7 +154,7 @@ func decorate(cfg *diffConfig, state any, ch changelog.Change, names map[string]
 						elem = &Element{ // innermost keyed element wins
 							Trail: append([]string(nil), trail...),
 							ID:    humanScalar(kv),
-							Name:  resolveName(cfg, obj, kv, names),
+							Name:  resolveName(cfg, obj, kp, kv, names),
 						}
 						fieldStart = len(trail)
 						cur = elVal
@@ -188,10 +196,15 @@ func containerValue(cfg *diffConfig, schema []string, raw string, names map[stri
 	}
 	label := ""
 	if obj, isObj := v.(map[string]any); isObj {
-		for _, nf := range cfg.nameFields {
-			if s, ok := obj[nf].(string); ok && s != "" {
-				label = s
-				break
+		label = nameField(cfg, obj)
+		// The value may itself be an element of the keyed array at schema — a
+		// whole-element add/remove — so its name can live on the object holding
+		// its identity, exactly as it does for Element.Name.
+		if label == "" {
+			if kp, ok := readKey(cfg, schema, []any{v}); ok {
+				if idObj := identityObject(obj, kp); idObj != nil {
+					label = nameField(cfg, idObj)
+				}
 			}
 		}
 	}
@@ -221,7 +234,7 @@ func valueNode(cfg *diffConfig, schema []string, label string, v any, names map[
 			lbl := strconv.Itoa(i)
 			if obj, isObj := el.(map[string]any); isObj && keyed {
 				if kv, ok := elemKeyValue(obj, kp); ok && kv != nil && !isContainer(kv) {
-					lbl = resolveName(cfg, obj, kv, names)
+					lbl = resolveName(cfg, obj, kp, kv, names)
 				}
 			}
 			// schema passes through array elements unchanged — index-free.
@@ -229,6 +242,7 @@ func valueNode(cfg *diffConfig, schema []string, label string, v any, names map[
 		}
 	default:
 		n.Value = mustJSON(v)
+		n.Display = names[n.Value] // "" unless the leaf is a known id
 	}
 	return n
 }
@@ -245,29 +259,51 @@ func bookkeeping(cfg *diffConfig, seg string, schema []string) bool {
 	return ok
 }
 
-// readKey is the read-time identity chain for the array at schema: the
-// caller-configured key, else the "id" convention — usable when the elements
-// present hold unique scalars at the key path (an absent/empty array passes
-// vacuously; the element under decoration still decides for itself).
+// readKey is the read-time identity chain for the array at schema — the same
+// chain the write side walks, judged against the one revision in hand: usable
+// when the elements present hold unique scalars at the key path (an
+// absent/empty array passes vacuously; the element under decoration still
+// decides for itself).
 func readKey(cfg *diffConfig, schema []string, side []any) ([]string, bool) {
-	if p, ok := cfg.arrayKeys[joinPath(schema)]; ok {
-		kp := splitPath(p)
-		if usableKey(kp, side) {
-			return kp, true
-		}
-	}
-	kp := []string{"id"}
-	if usableKey(kp, side) {
-		return kp, true
-	}
-	return nil, false
+	return identityKey(cfg, schema, func(kp []string) bool { return usableKey(kp, side) })
 }
 
-// resolveName picks an element's display name: its own first non-empty
-// name field, else the id→name index, else the id itself.
-func resolveName(cfg *diffConfig, obj map[string]any, keyValue any, names map[string]string) string {
+// nameField returns obj's first non-empty configured name field, "" if none.
+func nameField(cfg *diffConfig, obj map[string]any) string {
 	for _, nf := range cfg.nameFields {
 		if s, ok := obj[nf].(string); ok && s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+// identityObject returns the object a dotted key path descends into — the one
+// the identity value belongs to, and so the one that names it. nil for a
+// single-segment path, where the element root already is that object.
+func identityObject(obj map[string]any, keyPath []string) map[string]any {
+	if len(keyPath) < 2 {
+		return nil
+	}
+	v, ok := elemKeyValue(obj, keyPath[:len(keyPath)-1])
+	if !ok {
+		return nil
+	}
+	m, _ := v.(map[string]any)
+	return m
+}
+
+// resolveName picks an element's display name: its own first non-empty name
+// field, else — when identity is a dot-path — the name field of the object
+// that path descends into, else the id→name index, else the id itself. An
+// element may name itself; that is a different question from what the entity
+// it carries is called, which is why indexNames does not share this order.
+func resolveName(cfg *diffConfig, obj map[string]any, keyPath []string, keyValue any, names map[string]string) string {
+	if s := nameField(cfg, obj); s != "" {
+		return s
+	}
+	if idObj := identityObject(obj, keyPath); idObj != nil {
+		if s := nameField(cfg, idObj); s != "" {
 			return s
 		}
 	}
@@ -278,12 +314,15 @@ func resolveName(cfg *diffConfig, obj map[string]any, keyValue any, names map[st
 }
 
 // walkNames indexes id→name pairs found anywhere in doc: any object holding a
-// scalar "id" plus a non-empty name field, and elements of configured keyed
-// arrays via their declared key.
+// scalar at a WithIdentityFields entry plus a non-empty name field, and
+// elements of configured keyed arrays via their declared key. With no identity
+// fields declared the generic sweep does nothing — the kit guesses no names.
 func walkNames(cfg *diffConfig, doc any, schema []string, names map[string]string) {
 	switch v := doc.(type) {
 	case map[string]any:
-		indexNames(cfg, v, []string{"id"}, names)
+		for _, f := range cfg.identityFields {
+			indexNames(cfg, v, []string{f}, names)
+		}
 		for k, child := range v {
 			walkNames(cfg, child, childPath(schema, k), names)
 		}
@@ -301,16 +340,22 @@ func walkNames(cfg *diffConfig, doc any, schema []string, names map[string]strin
 	}
 }
 
+// indexNames records obj's id→name pair under keyPath. The name comes from the
+// object the identity belongs to — the element root for a single-segment key,
+// the object a dot-path descends into otherwise. The index is global, read back
+// for any id anywhere (displayFor, ValueNode.Display), so an element's own name
+// must never be filed against an id it merely carries.
 func indexNames(cfg *diffConfig, obj map[string]any, keyPath []string, names map[string]string) {
 	kv, ok := elemKeyValue(obj, keyPath)
 	if !ok || kv == nil || isContainer(kv) {
 		return
 	}
-	for _, nf := range cfg.nameFields {
-		if s, sok := obj[nf].(string); sok && s != "" {
-			names[mustJSON(kv)] = s
-			return
-		}
+	owner := obj
+	if idObj := identityObject(obj, keyPath); idObj != nil {
+		owner = idObj
+	}
+	if s := nameField(cfg, owner); s != "" {
+		names[mustJSON(kv)] = s
 	}
 }
 

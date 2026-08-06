@@ -228,6 +228,28 @@ stays an opaque string; don't teach `core` to parse it. Keep the kit importing
 only `core`. Any new "produce changes from state" or "render state" feature
 belongs here, not in `core`.
 
+### Identity is a write-side declaration
+
+**What.** Array element identity — `WithArrayKeys`, `WithIdentityFields` — is
+the one part of the option vocabulary that changes what is **recorded**. It
+decides whether an array edit seals as `lines.0.qty: 1→3` against a stable
+element or as a positional rewrite.
+
+**How.** `resolveKey` (`kit/diff.go`) walks configured key → each
+`WithIdentityFields` entry in order → positional, and its result shapes the
+`[]Change` that `Seal` hashes. `readKey` (`kit/explain.go`) walks the identical
+chain so `Explain` reads an array back the way `Diff` recorded it.
+
+**Why.** Every other option is read-side: labels, name fields, names, ignored
+fields all decorate at read time, so a wrong one is fixed by re-rendering.
+Identity is not — commits are hash-sealed, and no later declaration can re-key
+history that was recorded positionally.
+
+**Invariant.** The kit **guesses no field names** for identity; there is no
+default and there must not be one. Give the same declaration to both sides, and
+treat a shipped identity declaration as permanent — changing it splits a
+document's history into commits recorded under two different pairings.
+
 ## Testing & the conformance contract
 
 A backend is "correct" when it passes the suite (`core/conformance`):

@@ -314,8 +314,8 @@ func TestExplain_DisplayNames(t *testing.T) {
 			"assignee": "u2",
 			"users":    []any{map[string]any{"id": "u1", "name": "Alice"}, map[string]any{"id": "u2", "name": "Bob"}},
 		},
-	})
-	got, err := Explain(commits)
+	}, idKey)
+	got, err := Explain(commits, idKey)
 	if err != nil {
 		t.Fatalf("explain: %v", err)
 	}
@@ -354,14 +354,128 @@ func TestExplain_NameFieldsOverride(t *testing.T) {
 	commits := commitsFor(t, []any{
 		map[string]any{"docs": []any{map[string]any{"id": "d1", "title": "Spec", "name": ""}}},
 		map[string]any{"docs": []any{map[string]any{"id": "d1", "title": "Spec v2", "name": ""}}},
-	})
-	got, err := Explain(commits, WithNameFields("title"))
+	}, idKey)
+	got, err := Explain(commits, WithNameFields("title"), idKey)
 	if err != nil {
 		t.Fatalf("explain: %v", err)
 	}
 	edit := got[1][0]
 	if edit.Element == nil || edit.Element.Name != "Spec" {
 		t.Fatalf("WithNameFields must pick title, got %+v", edit.Element)
+	}
+}
+
+// TestExplain_ElementNameFromIdentityObject: when identity is a dot-path, the
+// display name comes from the object that path descends into — the one the id
+// belongs to — not from the element root, which carries no name of its own.
+func TestExplain_ElementNameFromIdentityObject(t *testing.T) {
+	key := WithArrayKeys(map[string]string{"lines": "product._id"})
+	commits := commitsFor(t, []any{
+		map[string]any{"lines": []any{
+			map[string]any{"product": map[string]any{"_id": "P1", "name": "NP1"}, "qty": 1},
+		}},
+		map[string]any{"lines": []any{
+			map[string]any{"product": map[string]any{"_id": "P1", "name": "NP1"}, "qty": 3},
+		}},
+	}, key)
+	got, err := Explain(commits, key)
+	if err != nil {
+		t.Fatalf("explain: %v", err)
+	}
+	edit := got[1][0]
+	if edit.Element == nil || edit.Element.Name != "NP1" || edit.Element.ID != "P1" {
+		t.Fatalf("dot-path identity must name from its own object, got %+v", edit.Element)
+	}
+}
+
+// TestExplain_SingleSegmentKeyUnchanged: a single-segment key has no identity
+// object to descend into, so it resolves at the element root exactly as before
+// — the identity-object lookup is a strict no-op there.
+func TestExplain_SingleSegmentKeyUnchanged(t *testing.T) {
+	key := WithArrayKeys(map[string]string{"lines": "id"})
+	commits := commitsFor(t, []any{
+		map[string]any{"lines": []any{map[string]any{"id": "L1", "name": "NL1", "qty": 1}}},
+		map[string]any{"lines": []any{map[string]any{"id": "L1", "name": "NL1", "qty": 3}}},
+	}, key)
+	got, err := Explain(commits, key)
+	if err != nil {
+		t.Fatalf("explain: %v", err)
+	}
+	edit := got[1][0]
+	if edit.Element == nil || edit.Element.Name != "NL1" || edit.Element.ID != "L1" {
+		t.Fatalf("single-segment key must resolve at the element root, got %+v", edit.Element)
+	}
+}
+
+// TestExplain_WithNames: the caller's dictionary resolves ids whose entities
+// live outside the document, and loses to a name the document itself supplies
+// — a stale dictionary can never override the record.
+func TestExplain_WithNames(t *testing.T) {
+	opts := []DiffOption{idKey, WithNames(map[string]string{
+		"t1": "Fragile", // entity lives outside the document
+		"u1": "Stale",   // the document names u1 too, and must win
+	})}
+	commits := commitsFor(t, []any{
+		map[string]any{"tag": "t1", "owner": "u1",
+			"users": []any{map[string]any{"id": "u1", "name": "Alice"}}},
+		map[string]any{"tag": "t2", "owner": "u2",
+			"users": []any{map[string]any{"id": "u1", "name": "Alice"}}},
+	}, opts...)
+	got, err := Explain(commits, opts...)
+	if err != nil {
+		t.Fatalf("explain: %v", err)
+	}
+	byPath := map[string]Explained{}
+	for _, r := range got[1] {
+		byPath[r.Path] = r
+	}
+	if d := byPath["tag"].Display; d == nil || d.From != "Fragile" {
+		t.Fatalf("dictionary must resolve an id absent from the document, got %+v", d)
+	}
+	if d := byPath["owner"].Display; d == nil || d.From != "Alice" {
+		t.Fatalf("document-derived name must beat the dictionary, got %+v", d)
+	}
+	if byPath["tag"].From != `"t1"` || byPath["owner"].From != `"u1"` {
+		t.Fatalf("stored From/To must stay raw ids, got %+v", got[1])
+	}
+}
+
+// TestExplain_ValueTreeDisplay: a container value made of ids keeps the record
+// in Value and gains the resolved name in Display; unknown ids stay "".
+func TestExplain_ValueTreeDisplay(t *testing.T) {
+	opts := []DiffOption{
+		WithArrayKeys(map[string]string{"lines": "id"}),
+		WithNames(map[string]string{"t1": "Fragile"}),
+	}
+	commits := commitsFor(t, []any{
+		map[string]any{"lines": []any{map[string]any{"id": "L1", "qty": 1}}},
+		map[string]any{"lines": []any{
+			map[string]any{"id": "L1", "qty": 1},
+			map[string]any{"id": "L2", "qty": 2, "tagIds": []any{"t1", "t9"}},
+		}},
+	}, opts...)
+	got, err := Explain(commits, opts...)
+	if err != nil {
+		t.Fatalf("explain: %v", err)
+	}
+	add := got[1][0]
+	if add.ToValue == nil {
+		t.Fatalf("whole-element addition must carry a value tree, got %+v", add)
+	}
+	var tags *ValueNode
+	for i, k := range add.ToValue.Kids {
+		if k.Label == "Tag Ids" {
+			tags = &add.ToValue.Kids[i]
+		}
+	}
+	if tags == nil || len(tags.Kids) != 2 {
+		t.Fatalf("want a Tag Ids list of 2, got %+v", add.ToValue.Kids)
+	}
+	if tags.Kids[0].Value != `"t1"` || tags.Kids[0].Display != "Fragile" {
+		t.Fatalf("known id must keep Value and gain Display, got %+v", tags.Kids[0])
+	}
+	if tags.Kids[1].Value != `"t9"` || tags.Kids[1].Display != "" {
+		t.Fatalf("unknown id must keep Value and no Display, got %+v", tags.Kids[1])
 	}
 }
 
