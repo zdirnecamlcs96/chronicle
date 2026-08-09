@@ -150,6 +150,15 @@ every reader replaying the same arrival order converges on the same state,
 deterministically. What is *never* eventual is the record itself: both sides
 of the fork are durable the instant they append.
 
+**Arrival order** means the order the backend durably accepted the appends —
+the in-memory adapter's slice order, SQL's per-document `seq`, ClickHouse's
+`at` timestamp, where producer clock skew can reorder it (the tradeoffs are on
+[operations]({{ '/documentation/operations/' | relative_url }})). And the fold
+never edits the record: a change's `From` values were diffed against the state
+*its* writer read, so on the side the fold overrides they can differ from the
+folded result — honest provenance of that writer's view, not a replay
+precondition. Replay applies `To` values only.
+
 The layering is deliberate. The atomic append primitive is the adapter's job;
 declaring which snapshot a commit was built against can only ever be the
 writer's. OCC and ACID — retries, conflict errors, expected-version checks —

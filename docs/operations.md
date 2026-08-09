@@ -88,6 +88,10 @@ err = chLog.PruneSeen(ctx, time.Now().AddDate(0, 0, -30))      // ClickHouse: as
 On ClickHouse, a native `TTL` clause on the `seen` table is the alternative for
 fresh installs; `PruneSeen` covers existing deployments.
 
+`PruneSeen` touches only idempotency keys. Commits are never pruned — every
+fork's parent stays resolvable and the verify family is unaffected by any
+retention window.
+
 ## Snapshots (read cache)
 
 The `snapshots` table (SQL and ClickHouse) is a **pure cache**: one row per
@@ -107,6 +111,14 @@ call on every boot (`WithMigrate(true)` does this in `Open`). There is **no sche
 version table yet**: additive changes are safe, but a breaking change (renaming a
 column, tightening a constraint) needs a hand-written migration applied out of
 band before deploying the new binary. Track this if you depend on the schema.
+
+One in-place swap is automated: 0.3.0's fork tolerance replaces the anti-fork
+`UNIQUE(doc_id, parent)` with a plain index, and `Migrate()` detects and
+performs it on existing MySQL deployments. The manual equivalent:
+
+```sql
+ALTER TABLE commits DROP INDEX uq_doc_parent, ADD INDEX idx_doc_parent (doc_id, parent);
+```
 
 ## Backup & restore
 

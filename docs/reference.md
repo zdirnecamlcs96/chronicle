@@ -304,6 +304,13 @@ func WithMessage(s string) CommitOption
 | Any error | **The staged changes are restored** — a failed commit loses nothing and the call can be retried |
 | `WithParent` set | Used as `Parent` instead of reading `Head` — an assertion, not a guard; a stale parent still commits, as a fork |
 
+When to assert: pass `WithParent` (or `Seal`'s `WithSealParent`, which
+forwards to it) whenever the writer knows which snapshot it built against —
+typically the head a state read returned; the kit's `RecordPatch` does this
+automatically via `StateWithHead`. Omitting it chains onto whatever `Head` is
+current at commit time, which is only honest for blind appends that never read
+state at all.
+
 ---
 
 ## `Service`
