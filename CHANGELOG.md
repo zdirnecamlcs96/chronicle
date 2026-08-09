@@ -8,10 +8,9 @@ Modules are versioned in lockstep. A single version covers every module and is
 published as per-module Go tags: `core/vX.Y.Z`, `adapters/memory/vX.Y.Z`,
 `adapters/sql/vX.Y.Z`, `adapters/clickhouse/vX.Y.Z`, and `kit/vX.Y.Z`.
 
-## [Unreleased]
+## [0.3.0] - 2026-08-09
 
-Next tag is 0.3.0 — the identity change and the kit split below are both
-breaking.
+The identity change and the kit split below are both breaking.
 
 ### Changed
 - **`core`, `adapters/*`, `kit`**: **BREAKING** — the log is now
@@ -322,6 +321,7 @@ breaking.
 - Initial release: `chronicle`, a durable, database-agnostic changelog library
   for Go — `core` plus `memory`, `sql`, and `clickhouse` adapters.
 
+[0.3.0]: https://github.com/zdirnecamlcs96/chronicle/releases/tag/core%2Fv0.3.0
 [0.2.0]: https://github.com/zdirnecamlcs96/chronicle/releases/tag/core%2Fv0.2.0
 [0.1.2]: https://github.com/zdirnecamlcs96/chronicle/releases/tag/core%2Fv0.1.2
 [0.1.1]: https://github.com/zdirnecamlcs96/chronicle/releases/tag/core%2Fv0.1.1
