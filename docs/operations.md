@@ -1,6 +1,6 @@
 ---
 title: Operating chronicle in production
-permalink: /operations/
+permalink: /documentation/operations/
 eyebrow: operations
 source: operations.md
 summary: >-
@@ -12,15 +12,19 @@ summary: >-
 
 | | `adapters/sql` (MySQL) | `adapters/clickhouse` |
 |---|---|---|
-| Consistency | **Synchronous, fork-free** | **Eventual** |
-| Fork prevention | `SELECT … FOR UPDATE` on the head row + `UNIQUE(doc_id, parent)` | none — producers must serialize per-document writes |
+| Consistency | **Synchronous** | **Eventual** |
+| Seq assignment | serialized per document via `SELECT … FOR UPDATE` on the head row | none — no locks or transactions |
 | Dedup of a re-sent commit | immediate (`UNIQUE(doc_id, id)` / `seen` table) | at read time via `ReplacingMergeTree` + `FINAL` (until a merge runs, duplicates are visible) |
-| `RunSerializableAppend` | ✅ passes | ✗ not applicable |
-| Best for | source-of-truth audit log, concurrent writers per document | high-volume append, analytical queries, single serialized writer |
+| Concurrent same-document appends | may fork — `RunLogConformance`'s `ForkAppend` passes | may fork — `RunLogConformance`'s `ForkAppend` passes |
+| Best for | source-of-truth audit log, concurrent writers per document | high-volume append, analytical queries |
 
-If two writers can seal the **same document** concurrently and you need exactly
-one linear chain, use **SQL**. ClickHouse will silently keep both unless an
-upstream serializes per-document writes.
+Both backends record a fork — two writers landing on the same parent — as
+legal history; neither serializes writers into one linear chain. Reconciling
+concurrent writers (optimistic-concurrency retry keyed off `WithSealParent`/
+`StateWithHead`, or an ACID transaction upstream) is the producer's job, never
+this library's. SQL additionally serializes seq assignment per document, so
+arrival order is well-defined even under a fork; ClickHouse has no locks, so
+ordering rests on `at` timestamps and producer clock skew can reorder arrival.
 
 ## SQL (MySQL) operations
 
@@ -38,15 +42,20 @@ db, _ := sql.Open("mysql", dsn)
 db.SetMaxOpenConns(n)             // ~ peak concurrent distinct-doc writers + read load
 db.SetMaxIdleConns(n)
 db.SetConnMaxLifetime(5 * time.Minute)
-log := changelogsql.New(db, changelogsql.WithMigrate(true))
+log := changelogsql.New(db)
+if err := log.Migrate(ctx); err != nil {
+	// handle error
+}
 ```
 
 A hot single document is a serialization point by design — spread load across
 documents, or batch a document's changes into fewer, larger commits.
 
-**Lock waits / deadlocks.** Under contention you may see lock-wait timeouts; the
-caller should treat `ErrParentConflict` as "re-read Head and re-seal" (the
-`Recorder` re-chains and re-hashes). Surface neither as a 5xx.
+**Lock waits / deadlocks.** Under contention you may see lock-wait timeouts or a
+deadlock error. `AppendCommit` retries seq assignment internally for the
+empty-document race, but a slow lock-wait timeout surfaces as an ordinary SQL
+error — the caller should retry the `Seal`/`AppendCommit` call itself, not
+treat it as a conflict to reconcile. Surface it as a transient error, not a 5xx.
 
 ## ClickHouse operations
 

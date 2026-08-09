@@ -3,19 +3,19 @@
 //
 //   - Change   — one line of a commit's diff (the content of an edit).
 //   - Recorder — the PORCELAIN, bound to ONE document. Append stages a Change
-//                (git add), Pending lists what's staged (git status), Commit
-//                seals the staged Changes into a hash-chained Commit (git commit).
+//     (git add), Pending lists what's staged (git status), Commit
+//     seals the staged Changes into a hash-chained Commit (git commit).
 //   - Commit   — an immutable, content-addressed commit: ID = hash(parent,
-//                message, changes), chained to its parent. Deliberately UNLIKE
-//                git, the hash excludes the commit's own At/Authors metadata —
-//                identical content names the same ID. Replay dedup comes from
-//                idempotency keys (Deduper), not hash equality: each staged
-//                Change is timestamped at Append and hashed with the payload.
+//     message, changes), chained to its parent. Deliberately UNLIKE
+//     git, the hash excludes the commit's own At/Authors metadata —
+//     identical content names the same ID. Replay dedup comes from
+//     idempotency keys (Deduper), not hash equality: each staged
+//     Change is timestamped at Append and hashed with the payload.
 //   - Log      — the REPOSITORY, where commits live. Each document has its own
-//                chain, like a branch: Head is the tip, Commits is `git log`.
-//                Storage is pluggable; in-memory / SQL / ClickHouse backends live
-//                under adapters/. There is no "init" — a document's history begins
-//                at its first commit (parent == "").
+//     chain, like a branch: Head is the tip, Commits is `git log`.
+//     Storage is pluggable; in-memory / SQL / ClickHouse backends live
+//     under adapters/. There is no "init" — a document's history begins
+//     at its first commit (parent == "").
 //
 // In short: the Recorder writes (stage → seal), the Log stores. See docs/model.md
 // for a side-by-side diagram with git.

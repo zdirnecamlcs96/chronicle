@@ -1,9 +1,13 @@
 package chroniclekit
 
 import (
+	"context"
+	"errors"
+	"reflect"
 	"testing"
 
 	changelog "github.com/zdirnecamlcs96/chronicle/core"
+	"github.com/zdirnecamlcs96/chronicle/kit/internal/memlog"
 )
 
 func TestPointerRoundTrip(t *testing.T) {
@@ -65,5 +69,74 @@ func TestToChanges(t *testing.T) {
 	}
 	if cs[2].Kind != KindDelete || cs[2].Path != "qux" || cs[2].To != "" {
 		t.Fatalf("remove→delete wrong: %+v", cs[2])
+	}
+}
+
+// RecordPatch exists so a sealed patch is a normal commit: From populated,
+// array elements paired by declared identity rather than by the indices the
+// client happened to send.
+func TestRecordPatch(t *testing.T) {
+	ctx := context.Background()
+	k := New(memlog.New())
+	if _, err := k.RecordUpdate(ctx, "doc", nil, map[string]any{
+		"status": "draft",
+		"lines":  []any{map[string]any{"id": "a", "qty": 1}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	c, err := k.RecordPatch(ctx, "doc", []Operation{
+		{Op: "replace", Path: "/status", Value: []byte(`"open"`)},
+		{Op: "replace", Path: "/lines/0/qty", Value: []byte(`5`)},
+	}, WithMessage("patched"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The whole point: a patch carries no before-values, RecordPatch recovers them.
+	for _, ch := range c.Changes {
+		if ch.From == "" {
+			t.Errorf("change %s has no From — Explain would render nothing", ch.Path)
+		}
+	}
+	got, err := k.State(ctx, "doc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]any{
+		"status": "open",
+		"lines":  []any{map[string]any{"id": "a", "qty": 5}},
+	}
+	if !reflect.DeepEqual(got, norm(t, want)) {
+		t.Fatalf("state = %v, want %v", got, want)
+	}
+}
+
+func TestRecordPatch_UnsupportedOpSealsNothing(t *testing.T) {
+	ctx := context.Background()
+	k := New(memlog.New())
+	if _, err := k.RecordUpdate(ctx, "doc", nil, map[string]any{"a": 1, "b": 2}); err != nil {
+		t.Fatal(err)
+	}
+	head, err := k.State(ctx, "doc")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// ToChanges would skip the move and seal the replace alone — a commit
+	// recording an edit the client did not send. RecordPatch refuses the batch.
+	_, err = k.RecordPatch(ctx, "doc", []Operation{
+		{Op: "replace", Path: "/a", Value: []byte(`9`)},
+		{Op: "move", Path: "/b"},
+	})
+	if !errors.Is(err, ErrUnsupportedOp) {
+		t.Fatalf("err = %v, want ErrUnsupportedOp", err)
+	}
+	after, err := k.State(ctx, "doc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(after, head) {
+		t.Fatalf("a refused patch must seal nothing: %v → %v", head, after)
 	}
 }

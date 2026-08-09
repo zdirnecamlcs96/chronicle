@@ -1,20 +1,23 @@
-package chroniclekit
+package chronicleexplain
 
 import (
 	"reflect"
 	"testing"
 
 	changelog "github.com/zdirnecamlcs96/chronicle/core"
+
+	chroniclediff "github.com/zdirnecamlcs96/chronicle/kit/diff"
+	chronicleschema "github.com/zdirnecamlcs96/chronicle/kit/schema"
 )
 
 // commitsFor diffs each successive state pair into one commit, oldest first,
 // starting from nil — the shape Explain expects (chain from root).
-func commitsFor(t *testing.T, states []any, opts ...DiffOption) []changelog.Commit {
+func commitsFor(t *testing.T, states []any, opts ...chronicleschema.Option) []changelog.Commit {
 	t.Helper()
 	var commits []changelog.Commit
 	prev := any(nil)
 	for _, s := range states {
-		changes, err := Diff(prev, s, opts...)
+		changes, err := chroniclediff.Diff(prev, s, opts...)
 		if err != nil {
 			t.Fatalf("diff: %v", err)
 		}
@@ -82,7 +85,7 @@ func TestExplain_BookkeepingFlag(t *testing.T) {
 			"items":  []any{map[string]any{"id": "I1", "rev": "b", "updated_at": "t2"}},
 		},
 	})
-	got, err := Explain(commits, WithIgnoredFields("updated_at", "meta.rev", "meta.audit"))
+	got, err := Explain(commits, chronicleschema.WithIgnoredFields("updated_at", "meta.rev", "meta.audit"))
 	if err != nil {
 		t.Fatalf("explain: %v", err)
 	}
@@ -111,9 +114,9 @@ func TestExplain_BookkeepingFlag(t *testing.T) {
 // so displays can break a whole-container change down without re-implementing
 // the walk.
 func TestExplain_ValueTrees(t *testing.T) {
-	opts := []DiffOption{
-		WithArrayKeys(map[string]string{"items": "sku", "items.quantities": "uom"}),
-		WithNameFields("label", "name"),
+	opts := []chronicleschema.Option{
+		chronicleschema.WithArrayKeys(map[string]string{"items": "sku", "items.quantities": "uom"}),
+		chronicleschema.WithNameFields("label", "name"),
 	}
 	doc := map[string]any{
 		"items": []any{
@@ -170,7 +173,7 @@ func TestExplain_ValueTreeBookkeeping(t *testing.T) {
 	commits := commitsFor(t, []any{
 		map[string]any{"item": map[string]any{"name": "Flour", "updated_at": "t1", "rev": 1}},
 	})
-	got, err := Explain(commits, WithIgnoredFields("updated_at", "item.rev"))
+	got, err := Explain(commits, chronicleschema.WithIgnoredFields("updated_at", "item.rev"))
 	if err != nil {
 		t.Fatalf("explain: %v", err)
 	}
@@ -216,7 +219,7 @@ func TestExplain_LabelResolver(t *testing.T) {
 		map[string]any{"status": "open", "qty": 1},
 		map[string]any{"status": "paid", "qty": 2},
 	})
-	got, err := Explain(commits, WithLabels(resolver))
+	got, err := Explain(commits, chronicleschema.WithLabels(resolver))
 	if err != nil {
 		t.Fatalf("explain: %v", err)
 	}
@@ -268,9 +271,9 @@ func TestExplain_WholeElementAddRemove(t *testing.T) {
 	var del, add *Explained
 	for i := range got[1] {
 		switch got[1][i].Kind {
-		case KindDelete:
+		case chronicleschema.KindDelete:
 			del = &got[1][i]
-		case KindCreate:
+		case chronicleschema.KindCreate:
 			add = &got[1][i]
 		}
 	}
@@ -286,11 +289,11 @@ func TestExplain_WholeElementAddRemove(t *testing.T) {
 // the metadata comes from the replayed revision, not from the record.
 func TestExplain_PreFeatureRecords(t *testing.T) {
 	doc := lines(el("P1", 1), el("P2", 2))
-	build, err := Diff(nil, doc) // legacy: no options, positional
+	build, err := chroniclediff.Diff(nil, doc) // legacy: no options, positional
 	if err != nil {
 		t.Fatalf("diff: %v", err)
 	}
-	legacyEdit := changelog.Change{Path: "lines.0.qty", Kind: KindPut, From: "1", To: "3"}
+	legacyEdit := changelog.Change{Path: "lines.0.qty", Kind: chronicleschema.KindPut, From: "1", To: "3"}
 	commits := []changelog.Commit{{Changes: build}, {Changes: []changelog.Change{legacyEdit}}}
 
 	got, err := Explain(commits, linesKey)
@@ -355,7 +358,7 @@ func TestExplain_NameFieldsOverride(t *testing.T) {
 		map[string]any{"docs": []any{map[string]any{"id": "d1", "title": "Spec", "name": ""}}},
 		map[string]any{"docs": []any{map[string]any{"id": "d1", "title": "Spec v2", "name": ""}}},
 	}, idKey)
-	got, err := Explain(commits, WithNameFields("title"), idKey)
+	got, err := Explain(commits, chronicleschema.WithNameFields("title"), idKey)
 	if err != nil {
 		t.Fatalf("explain: %v", err)
 	}
@@ -369,7 +372,7 @@ func TestExplain_NameFieldsOverride(t *testing.T) {
 // display name comes from the object that path descends into — the one the id
 // belongs to — not from the element root, which carries no name of its own.
 func TestExplain_ElementNameFromIdentityObject(t *testing.T) {
-	key := WithArrayKeys(map[string]string{"lines": "product._id"})
+	key := chronicleschema.WithArrayKeys(map[string]string{"lines": "product._id"})
 	commits := commitsFor(t, []any{
 		map[string]any{"lines": []any{
 			map[string]any{"product": map[string]any{"_id": "P1", "name": "NP1"}, "qty": 1},
@@ -392,7 +395,7 @@ func TestExplain_ElementNameFromIdentityObject(t *testing.T) {
 // object to descend into, so it resolves at the element root exactly as before
 // — the identity-object lookup is a strict no-op there.
 func TestExplain_SingleSegmentKeyUnchanged(t *testing.T) {
-	key := WithArrayKeys(map[string]string{"lines": "id"})
+	key := chronicleschema.WithArrayKeys(map[string]string{"lines": "id"})
 	commits := commitsFor(t, []any{
 		map[string]any{"lines": []any{map[string]any{"id": "L1", "name": "NL1", "qty": 1}}},
 		map[string]any{"lines": []any{map[string]any{"id": "L1", "name": "NL1", "qty": 3}}},
@@ -411,7 +414,7 @@ func TestExplain_SingleSegmentKeyUnchanged(t *testing.T) {
 // live outside the document, and loses to a name the document itself supplies
 // — a stale dictionary can never override the record.
 func TestExplain_WithNames(t *testing.T) {
-	opts := []DiffOption{idKey, WithNames(map[string]string{
+	opts := []chronicleschema.Option{idKey, chronicleschema.WithNames(map[string]string{
 		"t1": "Fragile", // entity lives outside the document
 		"u1": "Stale",   // the document names u1 too, and must win
 	})}
@@ -443,9 +446,9 @@ func TestExplain_WithNames(t *testing.T) {
 // TestExplain_ValueTreeDisplay: a container value made of ids keeps the record
 // in Value and gains the resolved name in Display; unknown ids stay "".
 func TestExplain_ValueTreeDisplay(t *testing.T) {
-	opts := []DiffOption{
-		WithArrayKeys(map[string]string{"lines": "id"}),
-		WithNames(map[string]string{"t1": "Fragile"}),
+	opts := []chronicleschema.Option{
+		chronicleschema.WithArrayKeys(map[string]string{"lines": "id"}),
+		chronicleschema.WithNames(map[string]string{"t1": "Fragile"}),
 	}
 	commits := commitsFor(t, []any{
 		map[string]any{"lines": []any{map[string]any{"id": "L1", "qty": 1}}},
@@ -482,7 +485,7 @@ func TestExplain_ValueTreeDisplay(t *testing.T) {
 func TestExplain_RootArrayAndNestedKeyed(t *testing.T) {
 	// Root-level array via the "" config key, with a nested keyed array inside:
 	// the innermost element wins.
-	opts := WithArrayKeys(map[string]string{"": "id", "subs": "id"})
+	opts := chronicleschema.WithArrayKeys(map[string]string{"": "id", "subs": "id"})
 	before := []any{map[string]any{
 		"id":   "R1",
 		"name": "Root",
@@ -493,11 +496,11 @@ func TestExplain_RootArrayAndNestedKeyed(t *testing.T) {
 		"name": "Root",
 		"subs": []any{map[string]any{"id": "S1", "name": "Sub", "v": 2}},
 	}}
-	build, err := Diff(nil, before, opts)
+	build, err := chroniclediff.Diff(nil, before, opts)
 	if err != nil {
 		t.Fatalf("diff: %v", err)
 	}
-	change, err := Diff(before, after, opts)
+	change, err := chroniclediff.Diff(before, after, opts)
 	if err != nil {
 		t.Fatalf("diff: %v", err)
 	}
@@ -516,3 +519,20 @@ func TestExplain_RootArrayAndNestedKeyed(t *testing.T) {
 		t.Fatalf("inner trail from document root, got %v", edit.Element.Trail)
 	}
 }
+
+// idKey declares the generic "id" identity the kit no longer assumes.
+var idKey = chronicleschema.WithIdentityFields("id")
+
+func lines(elems ...map[string]any) map[string]any {
+	arr := make([]any, len(elems))
+	for i, e := range elems {
+		arr[i] = e
+	}
+	return map[string]any{"lines": arr}
+}
+
+func el(id string, qty int) map[string]any {
+	return map[string]any{"product": map[string]any{"id": id, "name": "N" + id}, "qty": qty}
+}
+
+var linesKey = chronicleschema.WithArrayKeys(map[string]string{"lines": "product.id"})

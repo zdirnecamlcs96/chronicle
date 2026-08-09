@@ -60,7 +60,11 @@ func (r *Recorder) Pending() []Change {
 }
 
 // commitOpts holds the optional knobs applied to a single Commit call.
-type commitOpts struct{ message string }
+type commitOpts struct {
+	message   string
+	parent    string
+	hasParent bool
+}
 
 // CommitOption configures one call to Recorder.Commit. Pass via Commit's
 // variadic opts argument. Options apply in order.
@@ -72,11 +76,22 @@ func WithMessage(s string) CommitOption {
 	return func(o *commitOpts) { o.message = s }
 }
 
+// WithParent records id as the commit's parent — the snapshot the changes were
+// built against — instead of the document's Head at commit time. It is an
+// assertion, not a guard: the Log stores the commit either way, and a commit
+// whose parent is no longer the tip records a fork, not an error. WithParent("")
+// asserts the empty root. Without this option the parent defaults to Head at
+// commit time.
+func WithParent(id string) CommitOption {
+	return func(o *commitOpts) { o.parent, o.hasParent = id, true }
+}
+
 // Commit seals every staged Change into a new Commit, hash-chained onto the
-// document's current Head, and appends it to the Log — `git commit`. It returns
-// ErrNothingToCommit when nothing is staged. On any error the staged Changes are
-// restored, so nothing is lost. Options (e.g. WithMessage) are variadic and
-// additive — existing callers `rec.Commit(ctx)` continue to work.
+// document's current Head (or the parent asserted via WithParent), and appends
+// it to the Log — `git commit`. It returns ErrNothingToCommit when nothing is
+// staged. On any error the staged Changes are restored, so nothing is lost.
+// Options (e.g. WithMessage) are variadic and additive — existing callers
+// `rec.Commit(ctx)` continue to work.
 func (r *Recorder) Commit(ctx context.Context, opts ...CommitOption) (Commit, error) {
 	var co commitOpts
 	for _, opt := range opts {
@@ -92,10 +107,14 @@ func (r *Recorder) Commit(ctx context.Context, opts ...CommitOption) (Commit, er
 		return Commit{}, ErrNothingToCommit
 	}
 
-	parent, err := r.log.Head(ctx, r.docID)
-	if err != nil {
-		r.restore(pending)
-		return Commit{}, err
+	parent := co.parent
+	if !co.hasParent {
+		var err error
+		parent, err = r.log.Head(ctx, r.docID)
+		if err != nil {
+			r.restore(pending)
+			return Commit{}, err
+		}
 	}
 	id, err := computeID(parent, co.message, pending)
 	if err != nil {

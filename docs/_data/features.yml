@@ -16,7 +16,7 @@
 
 - title: Incremental verification
   body: >-
-    <code>VerifyChainAfter</code> checks only commits past a trusted anchor — no
+    <code>VerifyAfter</code> checks only commits past a persisted cursor — no
     full-chain replay on every audit.
 
 - title: Idempotency keys

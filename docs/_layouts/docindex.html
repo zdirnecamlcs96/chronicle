@@ -1,0 +1,27 @@
+---
+layout: default
+---
+<main class="shell docindex">
+  <div class="eyebrow"><span class="h">docs</span> {{ page.eyebrow | default: page.title | downcase }}</div>
+  <h1>{{ page.title }}</h1>
+  {%- if page.summary %}
+  <p class="lede">{{ page.summary }}</p>
+  {%- endif %}
+
+  <div class="grid docgrid">
+    {%- assign sec = '' -%}
+    {%- for d in site.data.docs %}
+    {%- if d.section != sec %}{%- assign sec = d.section %}
+    <h2 class="docgrid-sec">{{ sec }}</h2>
+    {%- endif %}
+    <a class="card doccard" href="{{ d.url | relative_url }}">
+      <h3>{{ d.name }}</h3>
+      <p>{{ d.blurb }}</p>
+    </a>
+    {%- endfor %}
+  </div>
+
+  <article class="prose">
+    {{ content }}
+  </article>
+</main>

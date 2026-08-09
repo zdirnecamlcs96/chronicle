@@ -3,7 +3,6 @@ package changelog
 import (
 	"context"
 	"errors"
-	"sync"
 	"testing"
 )
 
@@ -91,62 +90,32 @@ func TestService_GetFoundAndMissing(t *testing.T) {
 	}
 }
 
-// conflictOnceLog returns ErrParentConflict on the first AppendCommit, then
-// stores — proving Seal's retry loop re-chains and succeeds.
-type conflictOnceLog struct {
-	*memLog
-	mu sync.Mutex
-	n  int
-}
-
-func (c *conflictOnceLog) AppendCommit(ctx context.Context, docID string, cm Commit) error {
-	c.mu.Lock()
-	c.n++
-	first := c.n == 1
-	c.mu.Unlock()
-	if first {
-		return ErrParentConflict
-	}
-	return c.memLog.AppendCommit(ctx, docID, cm)
-}
-
-func TestService_ParentConflictRetry(t *testing.T) {
-	log := &conflictOnceLog{memLog: newMemLog()}
-	svc := NewService(log)
-	c, err := svc.Seal(context.Background(), "d1", oneChange(), "")
+func TestService_SealWithParent(t *testing.T) {
+	// WithSealParent anchors the commit to the asserted base even when another
+	// commit has since become Head — the append records a fork, not an error.
+	svc := NewService(newMemLog())
+	ctx := context.Background()
+	base, err := svc.Seal(ctx, "d1", oneChange(), "root")
 	if err != nil {
-		t.Fatalf("seal: %v", err)
+		t.Fatal(err)
 	}
-	if c.ID == "" {
-		t.Fatal("empty id")
+	racer, err := svc.Seal(ctx, "d1", oneChange(), "racer")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if got, _ := log.memLog.Commits(context.Background(), "d1", 0); len(got) != 1 {
-		t.Fatalf("stored=%d want 1", len(got))
+	forked, err := svc.Seal(ctx, "d1", oneChange(), "anchored", WithSealParent(base.ID))
+	if err != nil {
+		t.Fatalf("anchored seal: %v", err)
 	}
-}
-
-// alwaysConflictLog forces every AppendCommit into ErrParentConflict and
-// deliberately ignores ctx elsewhere, so a canceled context can only surface
-// through Seal's retry backoff.
-type alwaysConflictLog struct{}
-
-func (alwaysConflictLog) AppendCommit(ctx context.Context, docID string, cm Commit) error {
-	return ErrParentConflict
-}
-func (alwaysConflictLog) Commits(ctx context.Context, docID string, limit int) ([]Commit, error) {
-	return nil, nil
-}
-func (alwaysConflictLog) Head(ctx context.Context, docID string) (string, error) { return "", nil }
-
-func TestService_SealBackoffHonorsContext(t *testing.T) {
-	// With the context already canceled, the retry backoff must return the
-	// context error instead of sleeping through the remaining attempts.
-	svc := NewService(alwaysConflictLog{})
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	_, err := svc.Seal(ctx, "d1", oneChange(), "")
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("err=%v want context.Canceled", err)
+	if forked.Parent != base.ID {
+		t.Fatalf("parent=%q want asserted base %q", forked.Parent, base.ID)
+	}
+	got, _ := svc.Commits(ctx, "d1", 0)
+	if len(got) != 3 {
+		t.Fatalf("stored=%d want 3 (racer %s must survive)", len(got), racer.ID)
+	}
+	if err := VerifyChain(got); err != nil {
+		t.Fatalf("forked history must verify: %v", err)
 	}
 }
 

@@ -4,6 +4,115 @@ layout: default
 <main class="landing">
 
 <section class="hero">
+  <!-- Decorative backdrop: a commit graph. Each gold polyline is one document's
+       parent chain and the travelling dash is a verification walk along it. -->
+  <svg class="netbg" viewBox="0 0 1200 600" preserveAspectRatio="xMidYMid slice"
+       aria-hidden="true" focusable="false">
+    <defs>
+    <pattern id="lattice" patternUnits="userSpaceOnUse" width="48" height="83.138">
+    <path class="lat-edge" d="M0 0 H48 M0 41.569 H48 M0 0 L24.0 41.569 L0 83.138 M48 0 L24.0 41.569 L48 83.138"/>
+    <circle class="lat-node" cx="0" cy="0.000" r="2"/>
+    <circle class="lat-node" cx="48" cy="0.000" r="2"/>
+    <circle class="lat-node" cx="0" cy="83.138" r="2"/>
+    <circle class="lat-node" cx="48" cy="83.138" r="2"/>
+    <circle class="lat-node" cx="24" cy="41.569" r="2"/>
+    </pattern>
+    </defs>
+    <rect class="net-lattice" x="-260" y="-180" width="1740" height="1000" fill="url(#lattice)"/>
+    <g class="net-flow">
+    <line x1="936.0" y1="457.26" x2="960.0" y2="415.69"/>
+    <line x1="1200.0" y1="581.97" x2="1248.0" y2="581.97"/>
+    <line x1="192.0" y1="83.14" x2="240.0" y2="83.14"/>
+    <line x1="-192.0" y1="665.11" x2="-144.0" y2="665.11"/>
+    <line x1="720.0" y1="83.14" x2="744.0" y2="41.57"/>
+    <line x1="192.0" y1="498.83" x2="240.0" y2="498.83"/>
+    <line x1="432.0" y1="166.28" x2="480.0" y2="166.28"/>
+    <line x1="264.0" y1="124.71" x2="312.0" y2="124.71"/>
+    <line x1="360.0" y1="374.12" x2="408.0" y2="374.12"/>
+    <line x1="0.0" y1="249.42" x2="24.0" y2="290.98"/>
+    <line x1="1392.0" y1="249.42" x2="1416.0" y2="207.85"/>
+    <line x1="864.0" y1="166.28" x2="888.0" y2="207.85"/>
+    <line x1="552.0" y1="124.71" x2="600.0" y2="124.71"/>
+    <line x1="1344.0" y1="166.28" x2="1392.0" y2="166.28"/>
+    <line x1="336.0" y1="498.83" x2="384.0" y2="498.83"/>
+    <line x1="1416.0" y1="623.54" x2="1440.0" y2="581.97"/>
+    <line x1="384.0" y1="0.0" x2="432.0" y2="0.0"/>
+    <line x1="792.0" y1="540.4" x2="816.0" y2="581.97"/>
+    <line x1="24.0" y1="-41.57" x2="48.0" y2="0.0"/>
+    <line x1="360.0" y1="41.57" x2="408.0" y2="41.57"/>
+    <line x1="696.0" y1="41.57" x2="744.0" y2="41.57"/>
+    <line x1="1152.0" y1="-83.14" x2="1176.0" y2="-124.71"/>
+    <line x1="-24.0" y1="706.68" x2="0.0" y2="665.11"/>
+    <line x1="72.0" y1="290.98" x2="96.0" y2="332.55"/>
+    <line x1="672.0" y1="249.42" x2="696.0" y2="207.85"/>
+    <line x1="528.0" y1="498.83" x2="552.0" y2="540.4"/>
+    <line x1="216.0" y1="290.98" x2="264.0" y2="290.98"/>
+    <line x1="744.0" y1="540.4" x2="768.0" y2="581.97"/>
+    <line x1="288.0" y1="665.11" x2="336.0" y2="665.11"/>
+    <line x1="864.0" y1="332.55" x2="888.0" y2="374.12"/>
+    <line x1="504.0" y1="706.68" x2="552.0" y2="706.68"/>
+    <line x1="-48.0" y1="166.28" x2="0.0" y2="166.28"/>
+    <line x1="1416.0" y1="-41.57" x2="1440.0" y2="0.0"/>
+    <line x1="96.0" y1="83.14" x2="120.0" y2="124.71"/>
+    </g>
+    <g class="net-spines">
+    <path pathLength="1000" d="M-216.0 623.54 -192.0 581.97 -168.0 540.4 -144.0 581.97 -120.0 623.54 -72.0 623.54 -24.0 623.54 0.0 665.11 24.0 623.54 48.0 665.11 72.0 706.68 120.0 706.68 168.0 706.68 192.0 665.11 216.0 623.54 264.0 623.54 312.0 623.54 336.0 665.11 360.0 706.68 384.0 748.25 432.0 748.25 456.0 706.68 480.0 665.11 504.0 706.68 528.0 748.25 576.0 748.25 624.0 748.25 672.0 748.25 720.0 748.25 768.0 748.25 816.0 748.25 864.0 748.25 912.0 748.25 936.0 706.68 960.0 665.11 984.0 623.54 1008.0 665.11 1056.0 665.11 1080.0 706.68 1128.0 706.68 1152.0 748.25 1176.0 706.68 1200.0 665.11 1248.0 665.11 1272.0 706.68 1320.0 706.68 1344.0 665.11 1368.0 706.68 1392.0 665.11 1416.0 623.54 1440.0 665.11"/>
+    <path pathLength="1000" d="M-240.0 581.97 -192.0 581.97 -168.0 623.54 -144.0 581.97 -120.0 540.4 -72.0 540.4 -48.0 581.97 -24.0 540.4 24.0 540.4 72.0 540.4 96.0 581.97 144.0 581.97 168.0 540.4 216.0 540.4 240.0 498.83 264.0 457.26 312.0 457.26 360.0 457.26 384.0 498.83 432.0 498.83 480.0 498.83 528.0 498.83 576.0 498.83 600.0 457.26 624.0 415.69 648.0 457.26 672.0 415.69 696.0 374.12 744.0 374.12 768.0 415.69 792.0 457.26 840.0 457.26 864.0 498.83 888.0 457.26 912.0 415.69 960.0 415.69 984.0 374.12 1008.0 332.55 1056.0 332.55 1080.0 290.98 1128.0 290.98 1176.0 290.98 1224.0 290.98 1248.0 332.55 1296.0 332.55 1344.0 332.55 1392.0 332.55 1416.0 290.98 1440.0 249.42"/>
+    <path pathLength="1000" d="M-216.0 374.12 -168.0 374.12 -144.0 415.69 -120.0 457.26 -72.0 457.26 -48.0 415.69 -24.0 457.26 24.0 457.26 48.0 498.83 96.0 498.83 120.0 457.26 144.0 498.83 168.0 457.26 216.0 457.26 240.0 415.69 264.0 374.12 312.0 374.12 360.0 374.12 384.0 332.55 408.0 374.12 432.0 332.55 480.0 332.55 528.0 332.55 576.0 332.55 600.0 290.98 624.0 332.55 648.0 374.12 672.0 415.69 720.0 415.69 768.0 415.69 816.0 415.69 864.0 415.69 888.0 374.12 912.0 332.55 960.0 332.55 984.0 374.12 1008.0 332.55 1032.0 290.98 1056.0 249.42 1104.0 249.42 1152.0 249.42 1200.0 249.42 1248.0 249.42 1272.0 290.98 1296.0 332.55 1344.0 332.55 1392.0 332.55 1416.0 374.12 1440.0 332.55"/>
+    </g>
+    <g class="net-seals">
+    <path pathLength="1000" d="M-216.0 623.54 -192.0 581.97 -168.0 540.4 -144.0 581.97 -120.0 623.54 -72.0 623.54 -24.0 623.54 0.0 665.11 24.0 623.54 48.0 665.11 72.0 706.68 120.0 706.68 168.0 706.68 192.0 665.11 216.0 623.54 264.0 623.54 312.0 623.54 336.0 665.11 360.0 706.68 384.0 748.25 432.0 748.25 456.0 706.68 480.0 665.11 504.0 706.68 528.0 748.25 576.0 748.25 624.0 748.25 672.0 748.25 720.0 748.25 768.0 748.25 816.0 748.25 864.0 748.25 912.0 748.25 936.0 706.68 960.0 665.11 984.0 623.54 1008.0 665.11 1056.0 665.11 1080.0 706.68 1128.0 706.68 1152.0 748.25 1176.0 706.68 1200.0 665.11 1248.0 665.11 1272.0 706.68 1320.0 706.68 1344.0 665.11 1368.0 706.68 1392.0 665.11 1416.0 623.54 1440.0 665.11"/>
+    <path pathLength="1000" d="M-240.0 581.97 -192.0 581.97 -168.0 623.54 -144.0 581.97 -120.0 540.4 -72.0 540.4 -48.0 581.97 -24.0 540.4 24.0 540.4 72.0 540.4 96.0 581.97 144.0 581.97 168.0 540.4 216.0 540.4 240.0 498.83 264.0 457.26 312.0 457.26 360.0 457.26 384.0 498.83 432.0 498.83 480.0 498.83 528.0 498.83 576.0 498.83 600.0 457.26 624.0 415.69 648.0 457.26 672.0 415.69 696.0 374.12 744.0 374.12 768.0 415.69 792.0 457.26 840.0 457.26 864.0 498.83 888.0 457.26 912.0 415.69 960.0 415.69 984.0 374.12 1008.0 332.55 1056.0 332.55 1080.0 290.98 1128.0 290.98 1176.0 290.98 1224.0 290.98 1248.0 332.55 1296.0 332.55 1344.0 332.55 1392.0 332.55 1416.0 290.98 1440.0 249.42"/>
+    <path pathLength="1000" d="M-216.0 374.12 -168.0 374.12 -144.0 415.69 -120.0 457.26 -72.0 457.26 -48.0 415.69 -24.0 457.26 24.0 457.26 48.0 498.83 96.0 498.83 120.0 457.26 144.0 498.83 168.0 457.26 216.0 457.26 240.0 415.69 264.0 374.12 312.0 374.12 360.0 374.12 384.0 332.55 408.0 374.12 432.0 332.55 480.0 332.55 528.0 332.55 576.0 332.55 600.0 290.98 624.0 332.55 648.0 374.12 672.0 415.69 720.0 415.69 768.0 415.69 816.0 415.69 864.0 415.69 888.0 374.12 912.0 332.55 960.0 332.55 984.0 374.12 1008.0 332.55 1032.0 290.98 1056.0 249.42 1104.0 249.42 1152.0 249.42 1200.0 249.42 1248.0 249.42 1272.0 290.98 1296.0 332.55 1344.0 332.55 1392.0 332.55 1416.0 374.12 1440.0 332.55"/>
+    </g>
+    <g class="net-nodes head">
+    <circle cx="-216.0" cy="623.54" r="3"/>
+    <circle cx="-120.0" cy="623.54" r="3"/>
+    <circle cx="24.0" cy="623.54" r="3"/>
+    <circle cx="168.0" cy="706.68" r="3"/>
+    <circle cx="312.0" cy="623.54" r="3"/>
+    <circle cx="432.0" cy="748.25" r="3"/>
+    <circle cx="528.0" cy="748.25" r="3"/>
+    <circle cx="720.0" cy="748.25" r="3"/>
+    <circle cx="912.0" cy="748.25" r="3"/>
+    <circle cx="1008.0" cy="665.11" r="3"/>
+    <circle cx="1152.0" cy="748.25" r="3"/>
+    <circle cx="1272.0" cy="706.68" r="3"/>
+    <circle cx="1392.0" cy="665.11" r="3"/>
+    <circle cx="-240.0" cy="581.97" r="3"/>
+    <circle cx="-120.0" cy="540.4" r="3"/>
+    <circle cx="24.0" cy="540.4" r="3"/>
+    <circle cx="168.0" cy="540.4" r="3"/>
+    <circle cx="312.0" cy="457.26" r="3"/>
+    <circle cx="480.0" cy="498.83" r="3"/>
+    <circle cx="624.0" cy="415.69" r="3"/>
+    <circle cx="744.0" cy="374.12" r="3"/>
+    <circle cx="864.0" cy="498.83" r="3"/>
+    <circle cx="984.0" cy="374.12" r="3"/>
+    <circle cx="1128.0" cy="290.98" r="3"/>
+    <circle cx="1296.0" cy="332.55" r="3"/>
+    <circle cx="1440.0" cy="249.42" r="3"/>
+    <circle cx="-216.0" cy="374.12" r="3"/>
+    <circle cx="-72.0" cy="457.26" r="3"/>
+    <circle cx="48.0" cy="498.83" r="3"/>
+    <circle cx="168.0" cy="457.26" r="3"/>
+    <circle cx="312.0" cy="374.12" r="3"/>
+    <circle cx="432.0" cy="332.55" r="3"/>
+    <circle cx="600.0" cy="290.98" r="3"/>
+    <circle cx="720.0" cy="415.69" r="3"/>
+    <circle cx="888.0" cy="374.12" r="3"/>
+    <circle cx="1008.0" cy="332.55" r="3"/>
+    <circle cx="1152.0" cy="249.42" r="3"/>
+    <circle cx="1296.0" cy="332.55" r="3"/>
+    <circle cx="1440.0" cy="332.55" r="3"/>
+    </g>
+  </svg>
+  <script>
+    // Each verification walk enters its chain at a random point, so no two page
+    // loads look alike. The CSS delays are the no-JS fallback.
+    document.querySelectorAll('.net-seals path').forEach(p =>
+      p.style.animationDelay = -Math.random() * parseFloat(getComputedStyle(p).animationDuration) + 's');
+  </script>
   <div class="shell heroGrid">
   <div>
     <span class="pill"><span class="dot" aria-hidden="true"></span>v0 · experimental — API may change before v1</span>
@@ -14,7 +123,8 @@ layout: default
     Store it all behind a 3-method <code>Log</code> port.</p>
     <div class="cta">
       <a class="btn primary" href="{{ site.pkgsite }}">pkg.go.dev ↗</a>
-      <a class="btn" href="{{ site.repo }}">source on GitHub ↗</a>
+      <a class="btn" href="{{ '/documentation/' | relative_url }}">Documentation</a>
+      <a class="btn" href="{{ site.repo }}">Source on GitHub ↗</a>
     </div>
   </div>
   <div class="ledger" aria-label="Example commit history for document invoice-42">
@@ -76,182 +186,43 @@ history, _ := log.<span class="f">Commits</span>(ctx, <span class="s">"invoice-4
   </div></div>
 </section>
 
-<section id="model">
+<section id="docs" class="sealed">
   <div class="shell"><div class="sectionbody">
-  <div class="eyebrow"><span class="h">03</span> the mental model</div>
-  <h2>If you know git, you already know it.</h2>
-  <p class="lede">Stage with <code>Append</code>, seal with <code>Commit</code>, read with
-  <code>Commits</code>. Each document's history is a branch; <code>Head</code> is its tip.
-  One deliberate divergence: a commit stores <code>At</code> and <code>Authors</code>, but
-  the hash covers only parent, message, and changes — metadata never perturbs the
-  chain, and verification recomputes both the hash and the author set. Retries
-  dedup to a single commit through idempotency keys.</p>
-  <div class="diagram" role="img" aria-label="Side-by-side mapping: git's working tree, index, commit, and branch history correspond to chronicle's Change, pending buffer, Commit, and per-document Log.">
-{% raw %}<pre class="mermaid">
-flowchart LR
-    subgraph GIT["git"]
-        direction TB
-        G1["working tree&lt;br/&gt;(edits)"]
-        G2["index / staging area"]
-        G3["commit&lt;br/&gt;SHA = hash(tree, parent,&lt;br/&gt;author, time, message)"]
-        G4["branch history&lt;br/&gt;HEAD → parent → …"]
-        G1 -->|git add| G2
-        G2 -->|git commit -m| G3
-        G3 -->|chained onto HEAD| G4
-    end
-
-    subgraph CL["chronicle"]
-        direction TB
-        C1["Change&lt;br/&gt;(one edit)"]
-        C2["pending&lt;br/&gt;(staged)"]
-        C3["Commit&lt;br/&gt;ID = hash(parent, message, changes)&lt;br/&gt;At, Authors stored — not hashed"]
-        C4["per-doc history = Log&lt;br/&gt;Head → parent → …"]
-        C1 -->|Recorder.Append| C2
-        C2 -->|"Recorder.Commit(WithMessage)"| C3
-        C3 -->|chained onto Head| C4
-    end
-
-    G1 -.->|≈| C1
-    G2 -.->|≈| C2
-    G3 -.->|≈| C3
-    G4 -.->|≈| C4
-
-    classDef seal stroke:#D9A441,stroke-width:1.5px
-    class C3 seal
-</pre>{% endraw %}
+  <div class="eyebrow"><span class="h">03</span> documentation</div>
+  <h2>Then read the rest.</h2>
+  <p class="lede">The mental model, the design patterns, the kit walkthrough, and what
+  running it costs — all under
+  <a href="{{ '/documentation/' | relative_url }}">documentation</a>.</p>
+  <div class="grid docgrid">
+    {%- assign sec = '' -%}
+    {%- for d in site.data.docs %}
+    {%- if d.section != sec %}{%- assign sec = d.section %}
+    <h3 class="docgrid-sec">{{ sec }}</h3>
+    {%- endif %}
+    <a class="card doccard" href="{{ d.url | relative_url }}">
+      <h3>{{ d.name }}</h3>
+      <p>{{ d.blurb }}</p>
+    </a>
+    {%- endfor %}
   </div>
-  <p class="mapnote">Two git reflexes that deliberately don't exist here: no
-  <code>init</code> (a history begins at its first commit, <code>parent == ""</code>) and no
-  working tree (the Recorder's staged buffer <i>is</i> the index). The full side-by-side
-  lives in <a href="{{ '/model/' | relative_url }}">the git model</a>.</p>
   </div></div>
 </section>
 
-<section id="explain">
+<section id="caveats">
   <div class="shell"><div class="sectionbody">
-  <div class="eyebrow"><span class="h">04</span> two audiences</div>
-  <h2>Store for machines, render for humans.</h2>
-  <p class="lede">Change JSON is the commit-hash preimage, so display metadata is never
-  stored — it could not be backfilled, and old history would render blind forever.
-  Instead <code>kit.Explain</code> replays the chain and derives the human form at read
-  time: label trails, keyed-element identity, id → name display values, bookkeeping
-  flags, and per-field <code>ValueNode</code> breakdowns of container values. Declare the
-  schema with the same <code>DiffOption</code>s the write side uses; change them and every
-  existing commit re-renders — no stored byte moves.</p>
-<pre class="code"><code>rows, _ := chroniclekit.<span class="f">Explain</span>(commits, <span class="c">// oldest-first, same contract as Reconstruct</span>
-    chroniclekit.<span class="f">WithArrayKeys</span>(map[string]string{<span class="s">"items"</span>: <span class="s">"sku"</span>, <span class="s">"items.quantities"</span>: <span class="s">"uom"</span>}),
-    chroniclekit.<span class="f">WithNameFields</span>(<span class="s">"label"</span>, <span class="s">"name"</span>))
-<span class="c">// rows[i][j] decorates commits[i].Changes[j] — the stored Change rides along untouched</span></code></pre>
-  <div class="ledger" aria-label="The same stored change rendered for two audiences">
-    <div class="caption">one stored change — two audiences</div>
-    <div class="entry">
-      <div class="row1"><span class="msg">what the changelog stores</span><span class="tag">machine</span></div>
-      <div class="diff"><span class="path">items.0.quantities.0.qty</span>: "12" → <span class="to">"14"</span> · put · alice</div>
-    </div>
-    <div class="entry head">
-      <div class="row1"><span class="msg">what Explain derives</span><span class="tag sealed">read-time</span></div>
-      <div class="diff">Items › Quantities › Kilogram <span class="path">(kg)</span> › Qty: 12 → <span class="to">14</span></div>
-      <div class="parent">Element {Trail [Items, Quantities] · Name "Kilogram" · ID "kg"} · Field [Qty]</div>
-    </div>
-  </div>
-  <p class="mapnote">The kit emits structure — slices, names, canonical scalars, flags —
-  never formatting. Separators, truncation, verbs, colors, and folding belong to your
-  renderer: a CLI, a web app, and an email digest can all draw the same rows their own
-  way.</p>
-  </div></div>
-</section>
-
-<section id="architecture">
-  <div class="shell"><div class="sectionbody">
-  <div class="eyebrow"><span class="h">05</span> architecture</div>
-  <h2>Producers → core → any backend.</h2>
-  <p class="lede">Something produces <code>Change</code>s — CRUD handlers, a message
-  consumer, a state diff — a <code>Recorder</code> or the <code>Service</code> facade seals
-  them, and the commit lands in whatever <code>Log</code> you picked. The conformance suite
-  validates every backend against the same contract.</p>
-  <div class="diagram" role="img" aria-label="Layers: your app produces changes; the stdlib-only core seals them through the Recorder or Service facade into the 3-method Log port; commits land in the memory, MySQL, or ClickHouse adapter, all validated by the conformance suite.">
-{% raw %}<pre class="mermaid">
-flowchart TB
-    subgraph L1["producers — anything that emits changes"]
-        APP["your app&lt;br/&gt;CRUD handlers · message consumer · state diff"]
-    end
-
-    subgraph L2["core — stdlib only · package changelog"]
-        REC["Recorder&lt;br/&gt;Append(Change) → Commit()"]
-        SVC["Service facade&lt;br/&gt;Seal · Commits · AllCommits · Get"]
-        PORT{{"Log port&lt;br/&gt;AppendCommit · Commits · Head"}}
-        CAP["optional capabilities&lt;br/&gt;Indexer · Deduper · TailReader · Snapshotter"]
-    end
-
-    subgraph L3["adapters — optional · pick one, or write your own"]
-        MEM["adapters/memory&lt;br/&gt;in-memory · dev/ref"]
-        SQL["adapters/sql&lt;br/&gt;MySQL · transactional · fork-free"]
-        CH["adapters/clickhouse&lt;br/&gt;ClickHouse · columnar · eventual"]
-    end
-
-    CONF["core/conformance&lt;br/&gt;RunLogConformance · RunSerializableAppend · …"]
-
-    APP -->|Recorder| REC
-    APP -->|facade| SVC
-    REC --> PORT
-    SVC --> PORT
-    PORT --> MEM
-    PORT --> SQL
-    PORT --> CH
-    MEM -. validated by .-> CONF
-    SQL -. validated by .-> CONF
-    CH -. validated by .-> CONF
-
-    classDef port fill:#141414,stroke:#D9A441,stroke-width:1.5px,color:#FAFAFA
-    classDef conf fill:transparent,stroke:#5FA97C,stroke-dasharray:5 4,color:#5FA97C
-    class PORT port
-    class CONF conf
-</pre>{% endraw %}
-  </div>
-  <p class="mapnote">The core stays wire-free. When a Go server wants batteries, the
-  optional <code>kit</code> module layers them on top: state diffing, JSON-Patch
-  conversion, snapshot-backed <code>State</code>/<code>StateAt</code>, read-time
-  <code>Explain</code> display decoration, and
-  <code>kit/httpapi</code> — a ready-made <code>http.ServeMux</code>
-  (<code>POST /commits</code>, <code>GET /commits</code>, <code>GET /commits/{id}</code>,
-  <code>GET /changes</code>) you mount behind your own auth and middleware.</p>
-  </div></div>
-</section>
-
-<section id="backends">
-  <div class="shell"><div class="sectionbody">
-  <div class="eyebrow"><span class="h">06</span> backends</div>
-  <h2>Pick a store — or write your own.</h2>
-  <p class="lede">Adapters are optional sibling modules; the core never imports one.
-  Implement the 3-method <code>Log</code> yourself and prove it with
-  <code>conformance.RunLogConformance</code>.</p>
-  <div class="tablewrap">
-  <table>
-    <thead>
-      <tr><th>Backend</th><th>Module</th><th>Consistency</th><th>Log conformance</th><th>Serializable append</th></tr>
-    </thead>
-    <tbody>
-      {%- for b in site.data.backends %}
-      <tr>
-        <td><code>{{ b.ctor }}</code></td>
-        <td><code>{{ b.module }}</code></td>
-        <td>{{ b.consistency }}</td>
-        <td class="ok">✓</td>
-        {%- if b.serializable == "yes" %}
-        <td class="ok">✓ {{ b.serializable_note }}</td>
-        {%- else %}
-        <td class="na">— {{ b.serializable_note }}</td>
-        {%- endif %}
-      </tr>
-      {%- endfor %}
-    </tbody>
-  </table>
-  </div>
-  <p class="mapnote">Choose <code>adapters/sql</code> when concurrent writers must form one
-  linear chain per document; <code>adapters/clickhouse</code> for cheap columnar retention
-  and analytics where producers serialize per document. Operational details — pool
-  tuning, the ClickHouse <code>FINAL</code> cost, migrations, backup/restore — live in
-  <a href="{{ '/operations/' | relative_url }}">operations</a>.</p>
+  <div class="eyebrow"><span class="h">04</span> caveats</div>
+  <h2>Read it before you run it.</h2>
+  <p class="lede">What the library does not promise, stated before you depend on it.
+  The full list — no merges, no retention policy, no auth anywhere — is in
+  <a href="{{ '/documentation/reference/' | relative_url }}">reference</a>.</p>
+  <ul class="caveats">
+    <li><b>v0, experimental.</b> Pin a specific module version; modules are versioned
+    independently (<code>core/vX.Y.Z</code>, <code>adapters/sql/vX.Y.Z</code>, …).</li>
+    <li>The memory adapter is <b>reference/test only</b> — never production.</li>
+    <li>The <code>kit/httpapi</code> layer ships <b>no authentication, authorization, or rate
+    limiting</b> — those are the deployer's responsibility. Review against your own
+    threat model before exposing it to untrusted input.</li>
+  </ul>
   </div></div>
 </section>
 

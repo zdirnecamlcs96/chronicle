@@ -126,6 +126,50 @@ func TestRecorder_NoOptionsMatchesPreOptionsID(t *testing.T) {
 	}
 }
 
+// headCountingLog wraps a Log and counts Head calls.
+type headCountingLog struct {
+	Log
+	headCalls int
+}
+
+func (h *headCountingLog) Head(ctx context.Context, docID string) (string, error) {
+	h.headCalls++
+	return h.Log.Head(ctx, docID)
+}
+
+func TestRecorder_WithParentAnchorsAndSkipsHead(t *testing.T) {
+	ctx := context.Background()
+	log := &headCountingLog{Log: newMemLog()}
+	r := NewRecorder("doc", log)
+
+	r.Append(put("alice", "x"))
+	base, err := r.Commit(ctx)
+	if err != nil {
+		t.Fatalf("base commit: %v", err)
+	}
+	r.Append(put("bob", "y"))
+	if _, err := r.Commit(ctx); err != nil { // racer becomes Head
+		t.Fatalf("racer commit: %v", err)
+	}
+
+	log.headCalls = 0
+	r.Append(put("alice", "z"))
+	c, err := r.Commit(ctx, WithParent(base.ID))
+	if err != nil {
+		t.Fatalf("anchored commit: %v", err)
+	}
+	if c.Parent != base.ID {
+		t.Fatalf("parent = %q, want asserted %q", c.Parent, base.ID)
+	}
+	if log.headCalls != 0 {
+		t.Fatalf("Head called %d times, want 0 — the asserted parent must be used verbatim", log.headCalls)
+	}
+	stored, _ := log.Commits(ctx, "doc", 0)
+	if len(stored) != 3 {
+		t.Fatalf("log holds %d commits, want 3 (the fork must be stored)", len(stored))
+	}
+}
+
 func TestRecorder_FixedClockYieldsDeterministicCommitID(t *testing.T) {
 	at := time.Date(2024, 6, 1, 12, 0, 0, 0, time.UTC)
 	fixed := func() time.Time { return at }

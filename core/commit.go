@@ -24,13 +24,13 @@ import (
 //   - ID       the commit hash (see computeID).
 //   - Parent   the previous commit's ID; "" marks the root (first commit on a doc).
 //   - At       when it was sealed (NOT hashed) — unauthenticated convenience
-//              metadata. The authenticated timeline is each Change.At, which the
-//              hash covers as part of Changes.
+//     metadata. The authenticated timeline is each Change.At, which the
+//     hash covers as part of Changes.
 //   - Authors  the distinct Change actors, sorted (NOT hashed) — derived from
-//              Changes; VerifyChain recomputes and cross-checks it, so editing
-//              it after sealing is detectable (ErrAuthorsMismatch).
+//     Changes; VerifyChain recomputes and cross-checks it, so editing
+//     it after sealing is detectable (ErrAuthorsMismatch).
 //   - Message  an optional annotation from WithMessage; IS hashed, so editing it
-//              after the fact breaks the chain.
+//     after the fact breaks the chain.
 //   - Changes  the edits this commit seals — its diff.
 type Commit struct {
 	ID      string    `json:"id"`

@@ -5,15 +5,21 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+
+	"github.com/zdirnecamlcs96/chronicle/kit/internal/memlog"
+
+	chroniclediff "github.com/zdirnecamlcs96/chronicle/kit/diff"
+	chronicleexplain "github.com/zdirnecamlcs96/chronicle/kit/explain"
+	chronicleschema "github.com/zdirnecamlcs96/chronicle/kit/schema"
 )
 
 // Example is the batteries-included flow: diff-and-seal writes, then the
 // human-friendly reads — a changelog feed and point-in-time states.
-// newMemService is this package's in-memory test backend; production code
-// passes any adapter instead: New(changelog.NewService(yourLog)).
+// memlog is the kit's internal in-memory test backend, which hands back a
+// Service; production code passes an adapter's Log straight to New(yourLog).
 func Example() {
 	ctx := context.Background()
-	k := New(newMemService())
+	k := NewWithService(memlog.NewService())
 
 	// Create: RecordUpdate diffs before→after and seals the result.
 	v1 := map[string]any{"status": "open", "total": 100}
@@ -24,7 +30,7 @@ func Example() {
 
 	// Update, stamping who did it: diff, set the actor, seal.
 	v2 := map[string]any{"status": "paid", "total": 120}
-	changes, err := Diff(v1, v2)
+	changes, err := chroniclediff.Diff(v1, v2)
 	if err != nil {
 		panic(err)
 	}
@@ -62,22 +68,22 @@ func Example() {
 
 // Example_explain is the read side end to end: declare the document's schema
 // once, record with it, then replay the chain into display-ready rows. The
-// same DiffOption slice goes to both sides — identity shapes what is recorded,
+// same chronicleschema.Option slice goes to both sides — identity shapes what is recorded,
 // everything else only decorates at read time.
 func Example_explain() {
 	ctx := context.Background()
-	k := New(newMemService())
+	k := NewWithService(memlog.NewService())
 
 	// 1. Declare the schema once. This is the whole vocabulary.
-	opts := []DiffOption{
+	opts := []chronicleschema.Option{
 		// Write-side: how array elements are identified. "lines" is keyed by a
 		// dot-path into the embedded entity; other arrays fall back to "_id".
-		WithArrayKeys(map[string]string{"lines": "product._id"}),
-		WithIdentityFields("_id"),
+		chronicleschema.WithArrayKeys(map[string]string{"lines": "product._id"}),
+		chronicleschema.WithIdentityFields("_id"),
 		// Read-side: how things are named, labelled, and folded.
-		WithNameFields("name"),
-		WithIgnoredFields("meta.rev"),
-		WithNames(map[string]string{"t1": "Fragile"}), // entity lives elsewhere
+		chronicleschema.WithNameFields("name"),
+		chronicleschema.WithIgnoredFields("meta.rev"),
+		chronicleschema.WithNames(map[string]string{"t1": "Fragile"}), // entity lives elsewhere
 	}
 
 	// 2. Record. RecordUpdate diffs before→after and seals the result.
@@ -100,10 +106,10 @@ func Example_explain() {
 			},
 		},
 	}
-	if _, err := k.RecordUpdate(ctx, "order-7", nil, v1, WithDiffOptions(opts...)); err != nil {
+	if _, err := k.RecordUpdate(ctx, "order-7", nil, v1, WithActor("alice"), WithDiffOptions(opts...)); err != nil {
 		panic(err)
 	}
-	if _, err := k.RecordUpdate(ctx, "order-7", v1, v2, WithDiffOptions(opts...)); err != nil {
+	if _, err := k.RecordUpdate(ctx, "order-7", v1, v2, WithActor("bob"), WithDiffOptions(opts...)); err != nil {
 		panic(err)
 	}
 
@@ -113,7 +119,7 @@ func Example_explain() {
 		panic(err)
 	}
 	slices.Reverse(commits)
-	rows, err := Explain(commits, opts...)
+	rows, err := chronicleexplain.Explain(commits, opts...)
 	if err != nil {
 		panic(err)
 	}
@@ -149,9 +155,9 @@ func Example_explain() {
 	// Meta > Rev: 1 -> 2 [bookkeeping]
 }
 
-// printTree walks a ValueNode tree. Value is always the stored canonical
-// scalar; Display is the resolved name when that scalar is a known id.
-func printTree(n *ValueNode, indent string) {
+// printTree walks a chronicleexplain.ValueNode tree. Value is always the stored canonical
+// scalar; chronicleexplain.Display is the resolved name when that scalar is a known id.
+func printTree(n *chronicleexplain.ValueNode, indent string) {
 	if n == nil {
 		return
 	}

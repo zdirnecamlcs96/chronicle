@@ -1,17 +1,99 @@
 ---
 layout: default
 ---
-<main class="shell docpage">
-  <div class="eyebrow"><span class="h">docs</span> {{ page.eyebrow | default: page.title | downcase }}</div>
-  <h1>{{ page.title }}</h1>
-  {%- if page.summary %}
-  <p class="lede">{{ page.summary }}</p>
-  {%- endif %}
-  {%- if page.source %}
-  <p class="sourceline">source: <a href="{{ site.repo }}/blob/main/docs/{{ page.source }}"><code>docs/{{ page.source }}</code></a></p>
-  {%- endif %}
+<div class="shell docshell">
+  <aside class="docnav" aria-label="Documentation">
+    <a class="docnav-home" href="{{ '/documentation/' | relative_url }}">Documentation</a>
+    {%- comment -%}
+      One <ul>, with the section headings as list items rather than a <ul> per
+      section: below the split the whole rail collapses to a single horizontal
+      scroll row, and five separate lists would stack into five rows. The
+      headings hide there instead.
+    {%- endcomment -%}
+    <ul>
+      {%- assign sec = '' -%}
+      {%- for d in site.data.docs %}
+      {%- if d.section != sec %}{%- assign sec = d.section %}
+      <li class="docnav-sec">{{ sec }}</li>
+      {%- endif %}
+      <li>
+        <a href="{{ d.url | relative_url }}"{% if page.url == d.url %} class="current" aria-current="page"{% endif %}>{{ d.name }}</a>
+      </li>
+      {%- endfor %}
+    </ul>
+  </aside>
 
-  <article class="prose">
-    {{ content }}
-  </article>
-</main>
+  <main class="docpage">
+    <div class="eyebrow"><span class="h">docs</span> {{ page.eyebrow | default: page.title | downcase }}</div>
+    <h1>{{ page.title }}</h1>
+    {%- if page.summary %}
+    <p class="lede">{{ page.summary }}</p>
+    {%- endif %}
+    {%- if page.source %}
+    <p class="sourceline">source: <a href="{{ site.repo }}/blob/main/docs/{{ page.source }}"><code>docs/{{ page.source }}</code></a></p>
+    {%- endif %}
+
+    <article class="prose">
+      {{ content }}
+    </article>
+  </main>
+
+  <!-- Built from the rendered headings rather than Liquid: kramdown already
+       assigns the ids, and GitHub Pages has no TOC plugin. Stays empty and
+       hidden when there is nothing worth listing or JS is off. -->
+  <nav class="toc" aria-label="On this page" hidden>
+    <div class="toc-title">On this page</div>
+    <ul></ul>
+  </nav>
+</div>
+
+<script>
+(function () {
+  var toc = document.querySelector('.toc');
+  if (!toc) return;
+  var list = toc.querySelector('ul');
+  var heads = [].slice.call(document.querySelectorAll('.prose h2[id], .prose h3[id]'));
+  if (heads.length < 3) return; // a rail of two entries is just noise
+
+  var links = {};
+  heads.forEach(function (h) {
+    var li = document.createElement('li');
+    li.className = 'toc-' + h.tagName.toLowerCase();
+    var a = document.createElement('a');
+    a.href = '#' + h.id;
+    a.textContent = h.textContent;
+    li.appendChild(a);
+    list.appendChild(li);
+    links[h.id] = a;
+  });
+  toc.hidden = false;
+
+  // Highlight the last heading at or above the reading line. Computed rather
+  // than observed: an IntersectionObserver band leaves the previous entry lit
+  // when you jump straight to an anchor, because the target lands above it.
+  var current = null;
+  var ticking = false;
+
+  function sync() {
+    ticking = false;
+    var best = heads[0];
+    for (var i = 0; i < heads.length; i++) {
+      if (heads[i].getBoundingClientRect().top > 100) break; // past the line
+      best = heads[i];
+    }
+    var a = links[best.id];
+    if (a === current) return;
+    if (current) current.classList.remove('current');
+    current = a;
+    if (current) current.classList.add('current');
+  }
+
+  addEventListener('scroll', function () {
+    if (ticking) return;
+    ticking = true;
+    requestAnimationFrame(sync);
+  }, { passive: true });
+  addEventListener('hashchange', sync);
+  sync();
+})();
+</script>

@@ -27,8 +27,9 @@ const (
 //     when their content matches (a content-addressed, git-style chain). The
 //     uniqueness is therefore scoped to the document, not global; KEY idx_id
 //     keeps FindByID fast despite id no longer being a leftmost unique column.
-//   - UNIQUE (doc_id, parent): the anti-fork rule — at most one child per
-//     parent, and exactly one root (parent='') per document.
+//   - KEY (doc_id, parent): a plain index — forks (two commits sharing a
+//     parent) are legal recorded facts, so nothing constrains them; the index
+//     only keeps parent lookups fast.
 //   - snapshots is a pure cache (one row per doc, latest wins; TRUNCATE is
 //     always safe); MEDIUMBLOB = 16 MB ceiling — a materialized doc bigger than
 //     that should not be snapshotted.
@@ -47,7 +48,7 @@ func (d Dialect) ddl() []string {
 				changes  JSON            NOT NULL,
 				PRIMARY KEY (doc_id, seq),
 				UNIQUE KEY uq_commit_id (doc_id, id),
-				UNIQUE KEY uq_doc_parent (doc_id, parent),
+				KEY idx_doc_parent (doc_id, parent),
 				KEY idx_id (id),
 				KEY idx_at (at),
 				KEY idx_doc_at (doc_id, at)
@@ -70,11 +71,27 @@ func (d Dialect) ddl() []string {
 	}
 }
 
-// Migrate creates the schema if absent. Safe to call on every startup.
+// Migrate creates the schema if absent and upgrades an existing one: the
+// pre-fork-tolerance UNIQUE(doc_id, parent) anti-fork constraint, when still
+// present, is swapped for the plain idx_doc_parent index — forks are legal
+// recorded facts now, and the old constraint would keep rejecting them. Safe
+// to call on every startup.
 func (l *Log) Migrate(ctx context.Context) error {
 	for _, stmt := range l.dialect.ddl() {
 		if _, err := l.db.ExecContext(ctx, stmt); err != nil {
 			return fmt.Errorf("changelog-sql: migrate: %w", err)
+		}
+	}
+	var n int
+	if err := l.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM information_schema.statistics
+		 WHERE table_schema = DATABASE() AND table_name = 'commits' AND index_name = 'uq_doc_parent'`).Scan(&n); err != nil {
+		return fmt.Errorf("changelog-sql: migrate probe: %w", err)
+	}
+	if n > 0 {
+		if _, err := l.db.ExecContext(ctx,
+			`ALTER TABLE commits DROP INDEX uq_doc_parent, ADD INDEX idx_doc_parent (doc_id, parent)`); err != nil {
+			return fmt.Errorf("changelog-sql: migrate anti-fork index: %w", err)
 		}
 	}
 	return nil

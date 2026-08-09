@@ -1,0 +1,94 @@
+# The documentation index: sidebar order, hub cards, and reading order.
+#
+# `section` groups the sidebar and the hub grid. A page's section is its
+# reader's phase, not its subject: Start (does this solve my problem, and how
+# do I run it), Understand (the mental model, the map, the rationale — in that
+# order, because the rationale assumes the map), Build (what to call), Operate
+# (running it), Reference (look one thing up).
+#
+# Consecutive entries sharing a `section` render under one heading, so order
+# within a section is the order it is meant to be read.
+
+- section: Start
+  name: Why It Exists
+  url: "/documentation/why/"
+  blurb: >-
+    The problem it solves: every incident, bug or dispute, reduces to what the
+    data was, what it is now, when it changed, and who changed it — and why
+    that answer belongs behind a port rather than in one database.
+
+- section: Start
+  name: Getting Started
+  url: "/documentation/getting-started/"
+  blurb: >-
+    One program, grown five times: record a change, read the document back,
+    verify the chain, then swap the dev backend for a real database by
+    changing one line.
+
+- section: Understand
+  name: Git Model
+  url: "/documentation/model/"
+  blurb: >-
+    The side-by-side with git: what Append, Commit, and Head correspond to, the
+    one inversion (git stores snapshots, chronicle stores diffs), and the two
+    git reflexes that deliberately don't exist here.
+
+- section: Understand
+  name: Architecture
+  url: "/documentation/architecture/"
+  blurb: >-
+    The map — how the repo is laid out, for readers who know Clean Architecture
+    or ports-and-adapters. The rings are go.mod files, not folders.
+
+- section: Understand
+  name: Design Decisions
+  url: "/documentation/design/"
+  blurb: >-
+    The rationale behind that map — one decision per section, each with the
+    alternative that was rejected and what the choice costs. Read it to judge,
+    extend, or argue with the design; you do not need it to use chronicle.
+
+- section: Build
+  name: The Kit
+  url: "/documentation/kit/"
+  blurb: >-
+    chroniclekit end to end — diff a document into changes, seal them, replay
+    them back into display-ready rows, driven by one schema vocabulary.
+
+- section: Build
+  name: Sealing Patches
+  url: "/documentation/patches/"
+  blurb: >-
+    Optional: the RFC 6902 write path, nine stages from request to commit. Only
+    if a client sends you JSON Patch — a patch carries no before-values, and
+    sealing one directly records that gap permanently.
+
+- section: Operate
+  name: Operations
+  url: "/documentation/operations/"
+  blurb: >-
+    Running it for real: picking a backend by consistency model, pool tuning,
+    migrations, pruning, backup and restore, observability.
+
+- section: Reference
+  name: Reference
+  url: "/documentation/reference/"
+  blurb: >-
+    The normative contract — every exported call's inputs, guarantees, and
+    failure modes, the error sentinels, and what the library deliberately
+    does not do.
+
+- section: Reference
+  name: Concepts
+  url: "/documentation/concepts/"
+  blurb: >-
+    The lookup table for names — hash chain, event sourcing, snapshots, LCA —
+    what each pattern is called, which file implements it, and the prior art it
+    comes from.
+
+- section: Reference
+  name: Contributing
+  url: "/documentation/contributing/"
+  blurb: >-
+    The invariants a change must not break, the file-by-file reading order for
+    the source, and what the conformance suite expects of a new backend.

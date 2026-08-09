@@ -5,15 +5,17 @@ import (
 	"testing"
 
 	changelog "github.com/zdirnecamlcs96/chronicle/core"
+	chroniclediff "github.com/zdirnecamlcs96/chronicle/kit/diff"
+	chronicleview "github.com/zdirnecamlcs96/chronicle/kit/view"
 )
 
 // roundTrip builds `a` from nil, diffs a→b, and asserts replaying both commits
 // yields exactly `b` — the core Diff/Reconstruct guarantee.
 func roundTrip(t *testing.T, a, b any) {
 	t.Helper()
-	build, _ := Diff(nil, a)
-	change, _ := Diff(a, b)
-	got, err := Reconstruct([]changelog.Commit{{Changes: build}, {Changes: change}})
+	build, _ := chroniclediff.Diff(nil, a)
+	change, _ := chroniclediff.Diff(a, b)
+	got, err := chronicleview.Reconstruct([]changelog.Commit{{Changes: build}, {Changes: change}})
 	if err != nil {
 		t.Fatalf("reconstruct: %v", err)
 	}

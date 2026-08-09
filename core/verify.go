@@ -12,11 +12,9 @@ var (
 	// ErrHashMismatch means a commit's ID is not the content hash of its
 	// (Parent, Message, Changes) — the stored content was altered after sealing.
 	ErrHashMismatch = errors.New("changelog: commit id does not match its content hash")
-	// ErrBrokenChain means a commit's Parent is not the previous commit's ID.
-	ErrBrokenChain = errors.New("changelog: commit parent does not match previous commit id")
-	// ErrFork means two commits share a parent (or two roots exist) — the
-	// history is not a single linear chain.
-	ErrFork = errors.New("changelog: two commits share a parent")
+	// ErrMissingParent means a commit's Parent names a commit that is not in the
+	// history — the base it claims to build on was never stored (or was removed).
+	ErrMissingParent = errors.New("changelog: commit parent is not in the history")
 	// ErrAuthorsMismatch means a commit's Authors is not the sorted, distinct
 	// actor set of its Changes. Authors is derived metadata and NOT hashed, so
 	// this recomputation is the only check that catches editing it after sealing.
@@ -24,12 +22,14 @@ var (
 )
 
 // VerifyChain checks that commits — AS RETURNED BY Log.Commits, newest first —
-// form one tamper-free linear chain: exactly one root, each commit's Parent
-// equal to its predecessor's ID, no two commits sharing a parent, every ID
-// equal to the recomputed content hash of its (Parent, Message, Changes), and
-// every Authors equal to the recomputed distinct actor set of its Changes
-// (Authors is derived, not hashed — recomputation is what protects it).
-// An empty history is valid.
+// form a tamper-free ancestry: every ID equal to the recomputed content hash of
+// its (Parent, Message, Changes), every Authors equal to the recomputed distinct
+// actor set of its Changes (Authors is derived, not hashed — recomputation is
+// what protects it), and every Parent either "" (a root) or the ID of a commit
+// in the history. Forks — commits sharing a parent — and multiple roots are
+// legal recorded facts, not corruption; cycles are impossible because a parent
+// is inside its child's content hash. A linear chain passes unchanged. An empty
+// history is valid.
 //
 // The recompute is sound because adapters return Changes as Go structs
 // (re-marshaled in fixed field order), not raw stored column text.
@@ -37,17 +37,15 @@ func VerifyChain(commits []Commit) error {
 	if len(commits) == 0 {
 		return nil
 	}
-	seenParent := make(map[string]bool, len(commits))
-	prev := "" // the previous commit's ID, walking oldest → newest
+	ids := make(map[string]bool, len(commits))
+	for _, c := range commits {
+		ids[c.ID] = true
+	}
 	for i := len(commits) - 1; i >= 0; i-- {
 		c := commits[i]
-		pos := len(commits) - 1 - i // 0 = root
-		if seenParent[c.Parent] {
-			return fmt.Errorf("%w: commit %d (%s) repeats parent %q", ErrFork, pos, c.ID, c.Parent)
-		}
-		seenParent[c.Parent] = true
-		if c.Parent != prev {
-			return fmt.Errorf("%w: commit %d (%s) has parent %q, want %q", ErrBrokenChain, pos, c.ID, c.Parent, prev)
+		pos := len(commits) - 1 - i // 0 = oldest
+		if c.Parent != "" && !ids[c.Parent] {
+			return fmt.Errorf("%w: commit %d (%s) claims parent %q", ErrMissingParent, pos, c.ID, c.Parent)
 		}
 		id, err := computeID(c.Parent, c.Message, c.Changes)
 		if err != nil {
@@ -59,7 +57,6 @@ func VerifyChain(commits []Commit) error {
 		if !authorsMatch(c.Authors, c.Changes) {
 			return fmt.Errorf("%w: commit %d (%s)", ErrAuthorsMismatch, pos, c.ID)
 		}
-		prev = c.ID
 	}
 	return nil
 }
@@ -80,6 +77,8 @@ func authorsMatch(stored []string, changes []Change) bool {
 }
 
 // Verify fetches docID's full history from log and runs VerifyChain over it.
+// It is the ancestry authority: only the full history can decide whether every
+// parent exists.
 func Verify(ctx context.Context, log Log, docID string) error {
 	commits, err := log.Commits(ctx, docID, 0)
 	if err != nil {
@@ -88,27 +87,14 @@ func Verify(ctx context.Context, log Log, docID string) error {
 	return VerifyChain(commits)
 }
 
-// VerifyChainAfter checks that tail — the commits strictly after a trusted
-// anchor commit, OLDEST first (as TailReader.CommitsAfter returns them) —
-// extends anchorID as one tamper-free linear chain. anchorID "" means tail is
-// the full history from the root. An empty tail is valid.
-//
-// Because each commit's ID is the content hash of (Parent, Message, Changes)
-// and Parent is inside that hash, a verified anchor transitively attests every
-// commit behind it: re-checking the prefix adds nothing. The flip side is the
-// trust contract — tampering AT OR BEFORE the anchor is invisible here; run a
-// full VerifyChain when the anchor's provenance is itself in doubt.
-func VerifyChainAfter(anchorID string, tail []Commit) error {
-	seenParent := make(map[string]bool, len(tail))
-	prev := anchorID
-	for pos, c := range tail {
-		if seenParent[c.Parent] {
-			return fmt.Errorf("%w: commit %d (%s) repeats parent %q", ErrFork, pos, c.ID, c.Parent)
-		}
-		seenParent[c.Parent] = true
-		if c.Parent != prev {
-			return fmt.Errorf("%w: commit %d (%s) has parent %q, want %q", ErrBrokenChain, pos, c.ID, c.Parent, prev)
-		}
+// VerifyCommits content-checks a batch of commits in isolation: every ID equal
+// to the recomputed content hash of its (Parent, Message, Changes), every
+// Authors equal to the recomputed distinct actor set. It does NOT check that
+// parents exist — a fork's parent legitimately lies outside any batch — so it
+// cannot detect a commit whose claimed base was never stored. Run a full
+// VerifyChain for that. An empty batch is valid.
+func VerifyCommits(commits []Commit) error {
+	for pos, c := range commits {
 		id, err := computeID(c.Parent, c.Message, c.Changes)
 		if err != nil {
 			return err
@@ -119,18 +105,21 @@ func VerifyChainAfter(anchorID string, tail []Commit) error {
 		if !authorsMatch(c.Authors, c.Changes) {
 			return fmt.Errorf("%w: commit %d (%s)", ErrAuthorsMismatch, pos, c.ID)
 		}
-		prev = c.ID
 	}
 	return nil
 }
 
-// VerifyAfter incrementally verifies docID: it fetches only the commits after
-// anchorID via the log's TailReader and runs VerifyChainAfter — O(commits
-// since the anchor) instead of O(all commits). It returns the new verified
-// head (anchorID itself when the tail is empty), which the caller persists as
-// the anchor for the next run. anchorID "" verifies from the root. A log
-// without TailReader, or an anchorID no longer on the document
-// (ErrNoSuchCommit — the history was rewritten under the anchor), is an error.
+// VerifyAfter incrementally content-checks docID: it fetches only the commits
+// after anchorID via the log's TailReader and runs VerifyCommits — O(commits
+// since the anchor) instead of O(all commits). It returns the new cursor (the
+// last tail commit's ID, or anchorID itself when the tail is empty), which the
+// caller persists for the next run. anchorID "" checks from the root.
+//
+// The trust contract: each commit's ID hash-covers its Parent, so content
+// tampering in the tail is caught here — but whether every parent EXISTS is an
+// ancestry question only the full history can answer. Run Verify when the
+// document's ancestry is in doubt. A log without TailReader, or an anchorID no
+// longer on the document (ErrNoSuchCommit), is an error.
 func VerifyAfter(ctx context.Context, log Log, docID, anchorID string) (head string, err error) {
 	tr, ok := log.(TailReader)
 	if !ok {
@@ -140,7 +129,7 @@ func VerifyAfter(ctx context.Context, log Log, docID, anchorID string) (head str
 	if err != nil {
 		return "", err
 	}
-	if err := VerifyChainAfter(anchorID, tail); err != nil {
+	if err := VerifyCommits(tail); err != nil {
 		return "", err
 	}
 	if len(tail) == 0 {

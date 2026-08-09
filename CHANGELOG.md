@@ -10,9 +10,93 @@ published as per-module Go tags: `core/vX.Y.Z`, `adapters/memory/vX.Y.Z`,
 
 ## [Unreleased]
 
-Next tag is 0.3.0 — the identity change below is breaking.
+Next tag is 0.3.0 — the identity change and the kit split below are both
+breaking.
 
 ### Changed
+- **`core`, `adapters/*`, `kit`**: **BREAKING** — the log is now
+  **fork-tolerant**. A commit's parent is the snapshot the writer built
+  against, stored verbatim: `RecordPatch` anchors to the head its state read
+  reached (new `StateWithHead`), and new `WithParent` options
+  (`changelog.WithParent` CommitOption, `changelog.WithSealParent` SealOption,
+  `chroniclekit.WithParent` RecordOption) let any caller assert a base. Two
+  writers racing the same document record two commits sharing a parent — a
+  fork, folded last-write-wins in arrival order at read (replay behavior
+  unchanged). Previously a concurrent writer was silently rebased over: the
+  patch commit re-chained onto the newcomer's head while keeping `From` values
+  diffed against the old state, permanently sealing before-values that were
+  never true. Concurrency control is now explicitly out of scope — OCC/ACID
+  belongs to the persistence layer or the producer.
+
+  Removed: `changelog.ErrParentConflict`, `Seal`'s conflict retry/backoff,
+  `changelog.ErrBrokenChain`, `changelog.ErrFork`, `VerifyChainAfter`,
+  `conformance.RunSerializableAppend`. Added: `changelog.ErrMissingParent`,
+  `changelog.VerifyCommits`, a `ForkAppend` subtest in `RunLogConformance`.
+  `VerifyChain` now validates ancestry (hashes, authors, every parent exists)
+  instead of linearity; `VerifyAfter` is a content-only incremental check.
+
+  SQL adapter migration — the anti-fork `UNIQUE(doc_id, parent)` becomes a
+  plain index. `Migrate()` performs the swap automatically; manual SQL:
+
+  ```sql
+  ALTER TABLE commits DROP INDEX uq_doc_parent, ADD INDEX idx_doc_parent (doc_id, parent);
+  ```
+
+  Existing linear histories verify unchanged (a line is a degenerate tree);
+  stored data and hashes are untouched.
+
+- **`kit`**: **BREAKING** — `chroniclekit.New` now takes a `changelog.Log`
+  instead of a `changelog.Service`, and builds the `Service` itself. A caller
+  picks a backend and nothing else; `Service` becomes an advanced detail rather
+  than a required step. `NewWithService(svc)` is the old shape, for callers that
+  already hold a `Service` or wrap one — `kit/httpapi` is one.
+
+  ```go
+  // before                                  // after
+  svc := changelog.NewService(log)           k := chroniclekit.New(log)
+  k := chroniclekit.New(svc)
+  ```
+
+- **`kit/schema`**: **BREAKING for anyone importing the helpers** — the eleven
+  path and JSON functions (`SplitPath`, `JoinPath`, `ChildPath`, `ParentPath`,
+  `AsIndex`, `IsContainer`, `CanonJSON`, `ParseJSON`, `Normalize`,
+  `ElemKeyValue`, `Apply`) moved to `kit/internal/docmodel` and are no longer
+  importable. They existed so `chroniclediff`, `chronicleview`, and
+  `chronicleexplain` could share them, not as vocabulary a caller declares.
+  `chronicleschema` drops from 22 exported identifiers to 14, all of them
+  options you set. `KindCreate`/`KindPut`/`KindDelete` moved with `Apply` but
+  are re-exported, so `chronicleschema.KindPut` still resolves unchanged.
+
+- **`kit`**: **BREAKING** — the kit is now five packages instead of one. The
+  facade keeps its import path and every method: `chroniclekit.Kit`,
+  `Service`, `RecordUpdate`, `RecordChanges`, `State`, `StateAt`,
+  `CommitSnapshot`, `RecordOption`/`WithMessage`/`WithIdempotencyKey`/
+  `WithDiffOptions`, `Operation`/`FromChanges`/`ToChanges`, and
+  `KindCreate`/`KindPut`/`KindDelete` are all unchanged. `kit/httpapi` keeps
+  every route it had (see Added for the one it gained). What moved:
+
+  | before | after |
+  |---|---|
+  | `chroniclekit.Diff` | `chroniclediff.Diff` (`kit/diff`) |
+  | `chroniclekit.DiffOption` | `chronicleschema.Option` (`kit/schema`) — **renamed** |
+  | `chroniclekit.ValueType`, `.WithArrayKeys`, `.WithIdentityFields`, `.WithLabels`, `.WithIgnoredFields`, `.WithValueTypes`, `.WithNameFields`, `.WithNames` | `chronicleschema.*` (`kit/schema`) |
+  | `chroniclekit.Explain`, `.Explained`, `.Element`, `.Display`, `.ValueNode` | `chronicleexplain.*` (`kit/explain`) |
+  | `chroniclekit.Reconstruct` | `chronicleview.Reconstruct` (`kit/view`) |
+
+  `DiffOption` is renamed because the name was always a misnomer:
+  `WithLabels`, `WithNames`, `WithNameFields`, and `WithIgnoredFields` never
+  reach `Diff` at all. The option vocabulary is shared by both sides, so it
+  now lives in the package neither side owns.
+
+  Most call sites migrate with two substitutions — but note that
+  `WithMessage`, `WithIdempotencyKey`, and `WithDiffOptions` are `RecordOption`s
+  and stay on `chroniclekit`:
+
+  ```
+  s/chroniclekit\.DiffOption/chronicleschema.Option/g
+  s/chroniclekit\.With\(ArrayKeys\|IdentityFields\|Labels\|IgnoredFields\|ValueTypes\|NameFields\|Names\)/chronicleschema.With\1/g
+  ```
+
 - **`kit`**: **BREAKING** — the generic `"id"` element-identity convention is
   now caller-declared via `WithIdentityFields(fields...)`. The kit ships no
   default: an array with neither a `WithArrayKeys` entry nor a usable declared
@@ -22,6 +106,9 @@ Next tag is 0.3.0 — the identity change below is breaking.
   previous behaviour exactly.
 
 ### Fixed
+- **`kit`**: the "commit not found" errors raised by the read side now carry a
+  `chronicleview:` prefix rather than `chroniclekit:`. Not previously
+  documented as stable, but a consumer matching on the string will notice.
 - **`kit`**: an array whose identity is a dot-path (`{"lines":
   "product.id"}`) now takes its element display name from the object that path
   descends into, falling back to the element root's name fields, the id→name
@@ -33,6 +120,49 @@ Next tag is 0.3.0 — the identity change below is breaking.
   is never filed against an id it merely carries.
 
 ### Added
+- **`kit/schema`**: `WithStrictIdentity()` makes an array of objects with no
+  usable element identity a write-time `chroniclediff.ErrNoIdentity` instead of
+  a silent fall back to positional pairing. Identity shapes what is *recorded*,
+  so forgetting `WithIdentityFields` produced a successful write, a plausible
+  history, and green tests — with no way to re-key the commits afterwards. This
+  makes the omission fail loudly at the boundary where it is still fixable.
+  Opt-in: the default stays positional, which is the right answer for arrays
+  where order is the data. Scalar, empty, and keyed arrays pass regardless.
+- **`kit`**: `Kit.RecordPatch(ctx, docID, ops, opts...)` seals an RFC 6902
+  patch by applying it to the document's state and diffing the result. Sealing
+  `ToChanges(ops)` directly records changes with no `From` — legal, and it
+  replays correctly, but `chronicleexplain.Explain` then has no before-values
+  and the diff view degrades with nothing on the wire to signal why. Applying
+  first also pairs array elements by declared identity instead of trusting the
+  client's indices. Unlike `ToChanges`, it rejects `move`/`copy`/`test` with
+  `ErrUnsupportedOp` rather than skipping them: dropping an op silently seals a
+  commit recording an edit the client did not send.
+- **`kit/httpapi`**: `POST /commits` accepts `patch` (an RFC 6902 operation
+  list, sealed through `RecordPatch`) as a third write shape beside `changes`
+  and `before`/`after`, and a `schema` object carrying the write half of the
+  vocabulary — `array_keys`, `identity_fields`, `strict_identity`. The read
+  route has shipped its options over the wire since 0.2.0; the write route had
+  no equivalent, so a producer writing over HTTP could not declare the one
+  thing that must be declared *before* the first write. `value_types` still has
+  no wire form — `ValueType.Canon` is a Go func. `ErrUnsupportedOp` and
+  `chroniclediff.ErrNoIdentity` map to `400`; both are caused by what the
+  client sent, and neither reaches the log. The full request lifecycle is
+  walked through in [sealing RFC 6902 patches](docs/patches.md).
+- **`kit`**: `chronicleview.Reader` — the snapshot- and cursor-accelerated read
+  side on its own, without the write facade. `chroniclekit.Kit` now delegates
+  its three read methods to one.
+- **`kit/schema`**: `Config` and its accessors are public, so the schema a
+  caller declares can be inspected by the packages that consume it. (An earlier
+  draft of this release also exported the path and JSON helpers; they went back
+  behind `kit/internal/docmodel` before the tag — see Changed. Nothing was ever
+  published with them exported.)
+- **`kit`**: `WithActor(actor)` attributes every change in a record call to one
+  actor, which is what makes `Commit.Authors` non-empty. Previously the only way
+  to stamp an actor was to call `chroniclediff.Diff`, loop over the result, and
+  seal with `RecordChanges` — a lower layer and an extra import for the one
+  field the library exists to capture. It fills a **blank** `Change.Actor` only,
+  so an actor set deliberately per change still wins and mixed-attribution
+  commits stay expressible.
 - **`kit`**: `WithNames(map[string]string)` seeds the id→name index with pairs
   the replayed document cannot supply — ids referencing entities stored outside
   it. Keys normalise from plain or canonical-JSON form; document-derived names
@@ -41,6 +171,40 @@ Next tag is 0.3.0 — the identity change below is breaking.
 - **`kit`**: `ValueNode.Display` carries the resolved name when a leaf's
   `Value` is a known id, `""` otherwise. `Value` stays the canonical record and
   is never overwritten, so a display can show the name and keep the id.
+- **`kit/httpapi`**: `POST /explain` — `{doc, limit?, options?}` returns the
+  document's commits newest-first with every change display-decorated, so a
+  browser client needs no schema logic. `options` carries the read-side
+  vocabulary that survives JSON (`array_keys`, `identity_fields`,
+  `name_fields`, `ignored_fields`, `names`); each is skipped when empty, since
+  the replacing options would otherwise wipe their defaults. `limit` trims the
+  response, never the replay — decoration is derived from the chain's root, so
+  the handler always replays the whole history and slices afterwards.
+  `WithLabels` has no wire form (it is a func); labels fall back to Title Case
+  and a client wanting its own i18n translates from each row's `path`.
+- **`kit/explain`**: **BREAKING for JSON consumers** — `Explained`, `Element`,
+  `Display`, and `ValueNode` now carry snake_case `json` tags with
+  `omitempty`. Previously untagged, so marshalled output used Go field names
+  (`"Bookkeeping"`, `"FromValue"`); it is now `"bookkeeping"`, `"from_value"`,
+  and absent when empty. The Go API is unchanged.
+- **`kit/httpapi`**: `POST /commits` accepts an `actor` field. A non-empty
+  value feeds `WithActor`, filling the blank `Change.Actor` on every change
+  the write produces (an explicit per-change actor still wins) — previously
+  the only way to attribute a write over HTTP was to set `Actor` on each
+  change by hand.
+- **`kit/httpapi`**: `GET /state?doc=&at=` returns a document's reconstructed
+  state — at HEAD, or as of the commit named by `at`. An unknown `at` is
+  `404`.
+- **`kit/httpapi`**: `GET /verify?doc=` runs `VerifyChain` over a document's
+  full history and reports the result as `{ok, commits, head?}` on success or
+  `{ok:false, commits, error}` on a broken chain. The response is always
+  `200` — a failed verification is a result the caller asked for, not a
+  transport error.
+- **`kit/httpapi`**: `GET /commits?doc=&limit=&after=` gains cursor
+  pagination. `after=<commit id>` (requires `doc`) returns the commits
+  strictly after it, oldest-first — deliberately the reverse of the route's
+  default newest-first order, so a caller can advance the cursor by the last
+  id it saw. Prefers the backend's `TailReader` when one is exposed, and
+  falls back to a full read otherwise; an unknown `after` is `404`.
 
 ## [0.2.0] - 2026-08-05
 

@@ -5,6 +5,16 @@ import (
 	"strings"
 
 	changelog "github.com/zdirnecamlcs96/chronicle/core"
+	"github.com/zdirnecamlcs96/chronicle/kit/internal/docmodel"
+	chronicleschema "github.com/zdirnecamlcs96/chronicle/kit/schema"
+)
+
+// The change kinds, re-exported so Operation users can switch on a Kind
+// without a second import. chronicleschema holds the canonical definitions.
+const (
+	KindCreate = chronicleschema.KindCreate
+	KindPut    = chronicleschema.KindPut
+	KindDelete = chronicleschema.KindDelete
 )
 
 // Operation is one RFC 6902 JSON Patch operation. Path is an RFC 6901 JSON
@@ -40,6 +50,8 @@ func FromChanges(cs []changelog.Change) []Operation {
 // ToChanges ingests a JSON Patch as Changes. Because a patch is forward-only,
 // From is left "" (unknown); recover it by diffing against the prior state if you
 // need before-values. add/replace/remove are supported; other ops are skipped.
+// To seal a patch, use Kit.RecordPatch — it does that diff for you, and refuses
+// the ops this skips rather than dropping them from the commit.
 func ToChanges(ops []Operation) []changelog.Change {
 	out := make([]changelog.Change, 0, len(ops))
 	for _, op := range ops {
@@ -87,7 +99,7 @@ func kindForOp(op string) (string, bool) {
 // toPointer converts a kit dotted path to an RFC 6901 JSON Pointer, escaping
 // "~"→"~0" and "/"→"~1" per segment.
 func toPointer(p string) string {
-	segs := splitPath(p)
+	segs := docmodel.SplitPath(p)
 	if len(segs) == 0 {
 		return ""
 	}
@@ -117,5 +129,5 @@ func fromPointer(p string) string {
 		s = strings.ReplaceAll(s, "~0", "~")
 		segs[i] = s
 	}
-	return joinPath(segs)
+	return docmodel.JoinPath(segs)
 }

@@ -49,25 +49,33 @@ func TestVerifyChain(t *testing.T) {
 			cs[1].Authors = []string{"mallory"}
 			return cs
 		}, ErrAuthorsMismatch},
-		{"BrokenParentLink", func(cs []Commit) []Commit {
+		{"MissingParent", func(cs []Commit) []Commit {
 			// Point the tip at a non-existent parent; its ID still matches its
-			// content (recomputed), so the linkage check must catch it.
+			// content (recomputed), so the ancestry check must catch it.
 			cs[0].Parent = "0000000000000000000000000000000000000000000000000000000000000000"
 			id, _ := computeID(cs[0].Parent, cs[0].Message, cs[0].Changes)
 			cs[0].ID = id
 			return cs
-		}, ErrBrokenChain},
-		{"Fork", func(cs []Commit) []Commit {
-			// A second child of cs[2] (the root), content-valid.
-			forged := Commit{Parent: cs[2].ID, Message: "fork", Changes: []Change{{Actor: "x", Path: "p", Kind: "put", To: "f"}}}
-			forged.ID, _ = computeID(forged.Parent, forged.Message, forged.Changes)
-			return append([]Commit{forged}, cs...)
-		}, ErrFork},
-		{"TwoRoots", func(cs []Commit) []Commit {
-			root2 := Commit{Parent: "", Message: "second root", Changes: []Change{{Actor: "x", Path: "p", Kind: "put", To: "r"}}}
+		}, ErrMissingParent},
+		{"ForkIsLegal", func(cs []Commit) []Commit {
+			// A second child of cs[2] (the root), content-valid — two writers
+			// raced; both facts are recorded, neither is corruption.
+			sibling := Commit{Parent: cs[2].ID, Message: "fork", Authors: []string{"x"}, Changes: []Change{{Actor: "x", Path: "p", Kind: "put", To: "f"}}}
+			sibling.ID, _ = computeID(sibling.Parent, sibling.Message, sibling.Changes)
+			return append([]Commit{sibling}, cs...)
+		}, nil},
+		{"TwoRootsAreLegal", func(cs []Commit) []Commit {
+			root2 := Commit{Parent: "", Message: "second root", Authors: []string{"x"}, Changes: []Change{{Actor: "x", Path: "p", Kind: "put", To: "r"}}}
 			root2.ID, _ = computeID(root2.Parent, root2.Message, root2.Changes)
 			return append([]Commit{root2}, cs...)
-		}, ErrFork},
+		}, nil},
+		{"TamperInFork", func(cs []Commit) []Commit {
+			// A fork is still content-checked like any other commit.
+			sibling := Commit{Parent: cs[2].ID, Message: "fork", Authors: []string{"x"}, Changes: []Change{{Actor: "x", Path: "p", Kind: "put", To: "f"}}}
+			sibling.ID, _ = computeID(sibling.Parent, sibling.Message, sibling.Changes)
+			sibling.Message = "edited after the fact"
+			return append([]Commit{sibling}, cs...)
+		}, ErrHashMismatch},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -96,51 +104,43 @@ func chrono(cs []Commit) []Commit {
 	return out
 }
 
-func TestVerifyChainAfter(t *testing.T) {
-	// Anchor = commit 2 of 5 (0-based, oldest first); tail = commits 3..4.
+func TestVerifyCommits(t *testing.T) {
 	tests := []struct {
 		name    string
-		mutate  func(anchor string, tail []Commit) (string, []Commit)
+		mutate  func(tail []Commit) []Commit // takes commits 3..4 of a chain of 5, oldest first
 		wantErr error
 	}{
-		{"ValidTail", func(a string, tail []Commit) (string, []Commit) { return a, tail }, nil},
-		{"EmptyTail", func(a string, tail []Commit) (string, []Commit) { return a, nil }, nil},
-		{"EmptyAnchorIsFullChain", func(a string, tail []Commit) (string, []Commit) { return a, tail }, nil}, // anchor/tail built below
-		{"TamperedTail", func(a string, tail []Commit) (string, []Commit) {
+		{"Valid", func(tail []Commit) []Commit { return tail }, nil},
+		{"Empty", func(tail []Commit) []Commit { return nil }, nil},
+		{"Tampered", func(tail []Commit) []Commit {
 			tail[1].Message = "edited after the fact"
-			return a, tail
+			return tail
 		}, ErrHashMismatch},
-		{"TamperedAuthorsInTail", func(a string, tail []Commit) (string, []Commit) {
+		{"TamperedAuthors", func(tail []Commit) []Commit {
 			tail[1].Authors = append(tail[1].Authors, "mallory")
-			return a, tail
+			return tail
 		}, ErrAuthorsMismatch},
-		{"FirstParentNotAnchor", func(a string, tail []Commit) (string, []Commit) {
-			return "0000000000000000000000000000000000000000000000000000000000000000", tail
-		}, ErrBrokenChain},
-		{"ForkInTail", func(a string, tail []Commit) (string, []Commit) {
-			forged := Commit{Parent: a, Message: "fork", Changes: []Change{{Actor: "x", Path: "p", Kind: "put", To: "f"}}}
-			forged.ID, _ = computeID(forged.Parent, forged.Message, forged.Changes)
-			return a, append(tail, forged)
-		}, ErrFork},
+		{"ForkedBatchIsLegal", func(tail []Commit) []Commit {
+			// A sibling of tail[1] — content-valid, parent outside any anchor.
+			// VerifyCommits is a content check only; ancestry is VerifyChain's job.
+			sibling := Commit{Parent: tail[1].Parent, Message: "fork", Authors: []string{"x"}, Changes: []Change{{Actor: "x", Path: "p", Kind: "put", To: "f"}}}
+			sibling.ID, _ = computeID(sibling.Parent, sibling.Message, sibling.Changes)
+			return append(tail, sibling)
+		}, nil},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			_, cs := sealChain(t, 5)
 			all := chrono(cs)
-			anchor, tail := all[2].ID, all[3:]
-			if tt.name == "EmptyAnchorIsFullChain" {
-				anchor, tail = "", all
-			}
-			anchor, tail = tt.mutate(anchor, tail)
-			err := VerifyChainAfter(anchor, tail)
+			err := VerifyCommits(tt.mutate(all[3:]))
 			if tt.wantErr == nil {
 				if err != nil {
-					t.Fatalf("VerifyChainAfter: %v, want nil", err)
+					t.Fatalf("VerifyCommits: %v, want nil", err)
 				}
 				return
 			}
 			if !errors.Is(err, tt.wantErr) {
-				t.Fatalf("VerifyChainAfter: %v, want %v", err, tt.wantErr)
+				t.Fatalf("VerifyCommits: %v, want %v", err, tt.wantErr)
 			}
 		})
 	}
@@ -152,7 +152,7 @@ func TestVerifyAfter(t *testing.T) {
 	all := chrono(cs)
 	head := all[4].ID
 
-	// Full verify from the root; returned head becomes the next anchor.
+	// Full check from the root; returned head becomes the next anchor.
 	got, err := VerifyAfter(ctx, log, "doc", "")
 	if err != nil || got != head {
 		t.Fatalf("VerifyAfter(root) = %q, %v; want %q, nil", got, err, head)
@@ -171,7 +171,7 @@ func TestVerifyAfter(t *testing.T) {
 	}
 
 	// Tampering AFTER the anchor is detected; BEFORE the anchor is not (that is
-	// the documented trust contract — the anchor attests everything behind it).
+	// the documented trust contract — content behind the cursor is not refetched).
 	log.mu.Lock()
 	log.commits["doc"][3].Message = "tampered tail"
 	log.mu.Unlock()

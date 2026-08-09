@@ -1,22 +1,14 @@
 <footer>
   <div class="shell">
     <div class="rootmark">you've reached the root commit — <span class="h">parent ""</span>, where every history begins</div>
-    <h2>Read it before you run it.</h2>
-    <ul class="caveats">
-      <li><b>v0, experimental.</b> Pin a specific module version; modules are versioned
-      independently (<code>core/vX.Y.Z</code>, <code>adapters/sql/vX.Y.Z</code>, …).</li>
-      <li>The memory adapter is <b>reference/test only</b> — never production.</li>
-      <li>The <code>kit/httpapi</code> layer ships <b>no authentication, authorization, or rate
-      limiting</b> — those are the deployer's responsibility. Review against your own
-      threat model before exposing it to untrusted input.</li>
-    </ul>
     <div class="footlinks">
       <a href="{{ site.pkgsite }}">pkg.go.dev</a>
       <a href="{{ site.repo }}">GitHub</a>
-      <a href="{{ '/concepts/' | relative_url }}">concepts</a>
-      <a href="{{ '/operations/' | relative_url }}">operations</a>
-      <a href="{{ '/model/' | relative_url }}">git model</a>
-      <a href="{{ '/contributing/' | relative_url }}">contributing</a>
+      <a href="{{ '/documentation/' | relative_url }}">Documentation</a>
+      <a href="{{ '/documentation/model/' | relative_url }}">Git Model</a>
+      <a href="{{ '/documentation/concepts/' | relative_url }}">Concepts</a>
+      <a href="{{ '/documentation/operations/' | relative_url }}">Operations</a>
+      <a href="{{ '/documentation/contributing/' | relative_url }}">Contributing</a>
     </div>
     <p class="license">MIT license · github.com/zdirnecamlcs96/chronicle</p>
   </div>

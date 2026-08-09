@@ -1,6 +1,6 @@
 ---
 title: The git mental model
-permalink: /model/
+permalink: /documentation/model/
 eyebrow: git model
 source: model.md
 summary: >-
@@ -9,40 +9,33 @@ summary: >-
   document keeps its own commit history like a branch.
 ---
 
+One inversion sits under the whole mapping, and the rest of the docs assume it:
+**git stores snapshots and derives diffs; chronicle stores diffs and derives
+snapshots.** A git commit holds a tree; a chronicle commit holds an ordered list
+of operations, and state is what you get by replaying them.
+
 ```mermaid
+%% alt: The inversion, side by side. git stores snapshots — a commit holds a whole tree — and derives diffs on demand (git diff, git show). chronicle stores diffs — a commit holds an ordered list of Changes — and derives state by replaying them (Reconstruct / State). Same two nouns, opposite arrows: what git computes is what chronicle stores, and vice versa.
 flowchart LR
     subgraph GIT["git"]
-        direction TB
-        G1["working tree<br/>(edits)"]
-        G2["index / staging area"]
-        G3["commit<br/>SHA = hash(tree, parent,<br/><b>author, time,</b> message)"]
-        G4["branch history<br/>HEAD → parent → …"]
-        G5["git log · git show &lt;sha&gt;"]
-        G1 -->|git add| G2
-        G2 -->|git commit -m| G3
-        G3 -->|chained onto HEAD| G4
-        G4 --> G5
+        GS["<b>stored:</b> snapshot<br/>(commit = whole tree)"]
+        GD["<b>derived:</b> diff<br/>(git diff · git show)"]
+        GS -->|compare trees| GD
     end
 
     subgraph CL["chronicle"]
-        direction TB
-        C1["Change<br/>(one edit)"]
-        C2["pending<br/>(staged)"]
-        C3["Commit<br/>ID = hash(parent,<br/>message, changes)<br/><b>(At/Authors stored, not hashed)</b>"]
-        C4["per-doc history = Log<br/>Head → parent → …"]
-        C5["Commits · FindByID"]
-        C1 -->|Recorder.Append| C2
-        C2 -->|"Recorder.Commit(WithMessage)"| C3
-        C3 -->|chained onto Head| C4
-        C4 --> C5
+        CD["<b>stored:</b> diff<br/>(commit = ordered Changes)"]
+        CS["<b>derived:</b> snapshot<br/>(replay · Reconstruct / State)"]
+        CD -->|replay| CS
     end
 
-    G1 -.->|≈| C1
-    G2 -.->|≈| C2
-    G3 -.->|≈| C3
-    G4 -.->|≈| C4
-    G5 -.->|≈| C5
+    classDef derived stroke-dasharray: 5 4
+    class GD,CS derived
 ```
+
+Solid boxes are what each system persists; dashed boxes are computed on
+demand. The call-by-call correspondence lives in the [mapping table](#mapping)
+below — the diagram's only job is this reversal.
 
 ## Two pieces: porcelain vs repository
 
@@ -73,7 +66,7 @@ Two things git users reach for that **don't** exist here:
 | `git commit -m` | `Recorder.Commit(WithMessage)` |
 | commit SHA | `Commit.ID` (`computeID`) |
 | HEAD / branch | `Head` / per-document `Log` |
-| non-fast-forward push reject | `ErrParentConflict` |
+| non-fast-forward push (git rejects it) | recorded as a fork — both commits land, no rejection |
 | `git log` | `Commits` / `Indexer.AllCommits` |
 | `git show <sha>` | `Indexer.FindByID` |
 

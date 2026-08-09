@@ -3,21 +3,10 @@ package changelog
 import (
 	"context"
 	"errors"
-	"math/rand/v2"
-	"time"
 )
 
 // ErrEmptyChanges is returned by Service.Seal when no changes are supplied.
 var ErrEmptyChanges = errors.New("changelog: seal requires at least one change")
-
-// maxSealAttempts bounds the retry loop when a durable backend reports
-// ErrParentConflict (a concurrent same-document append raced in).
-const maxSealAttempts = 5
-
-// sealBackoffBase is the cap of the first retry's full-jitter sleep; each
-// further attempt doubles it (0..5ms, 0..10ms, 0..20ms, 0..40ms — ~75ms worst
-// case in total), de-synchronizing writers hammering the same document.
-const sealBackoffBase = 5 * time.Millisecond
 
 // Service is the in-process changelog facade — the operations a server needs,
 // over any Log, with NO transport and no net/http dependency. Construct it once
@@ -27,9 +16,10 @@ const sealBackoffBase = 5 * time.Millisecond
 // It adds the two things the per-document Log port lacks: cross-document queries
 // (AllCommits, Get) and producer idempotency (Seal + WithIdempotencyKey).
 type Service interface {
-	// Seal stages changes for docID and commits them as a single Commit, retrying
-	// transparently on ErrParentConflict. WithIdempotencyKey makes a replay return
-	// the already-sealed commit. Returns ErrEmptyChanges if changes is empty.
+	// Seal stages changes for docID and commits them as a single Commit, anchored
+	// to the document's Head at commit time unless WithParent asserts the base.
+	// WithIdempotencyKey makes a replay return the already-sealed commit. Returns
+	// ErrEmptyChanges if changes is empty.
 	Seal(ctx context.Context, docID string, changes []Change, message string, opts ...SealOption) (Commit, error)
 	// Commits returns a document's commits, newest first. limit <= 0 means all.
 	Commits(ctx context.Context, docID string, limit int) ([]Commit, error)
@@ -40,7 +30,11 @@ type Service interface {
 	Get(ctx context.Context, commitID string) (dc DocCommit, ok bool, err error)
 }
 
-type sealConfig struct{ idempotencyKey string }
+type sealConfig struct {
+	idempotencyKey string
+	parent         string
+	hasParent      bool
+}
 
 // SealOption configures a single Seal call.
 type SealOption func(*sealConfig)
@@ -50,6 +44,14 @@ type SealOption func(*sealConfig)
 // an at-least-once delivery retry lands exactly one commit.
 func WithIdempotencyKey(key string) SealOption {
 	return func(c *sealConfig) { c.idempotencyKey = key }
+}
+
+// WithSealParent asserts the parent — the snapshot the changes were built
+// against — instead of the document's Head at commit time. An assertion, not a
+// guard: a parent that is no longer the tip records a fork. See
+// Recorder.WithParent, which this forwards to.
+func WithSealParent(id string) SealOption {
+	return func(c *sealConfig) { c.parent, c.hasParent = id, true }
 }
 
 // service is the default Service implementation: a thin facade that holds no
@@ -118,22 +120,10 @@ func (s *service) Seal(ctx context.Context, docID string, changes []Change, mess
 	if message != "" {
 		cOpts = append(cOpts, WithMessage(message))
 	}
-	var c Commit
-	var err error
-	for attempt := 0; attempt < maxSealAttempts; attempt++ {
-		c, err = rec.Commit(ctx, cOpts...)
-		if !errors.Is(err, ErrParentConflict) {
-			break
-		}
-		// A concurrent same-doc append landed; the Recorder restored the pending
-		// changes, so the next iteration re-reads Head and re-chains/re-hashes.
-		// Jittered backoff de-synchronizes the contenders before that retry.
-		if attempt < maxSealAttempts-1 {
-			if serr := sealBackoff(ctx, attempt); serr != nil {
-				return Commit{}, serr
-			}
-		}
+	if cfg.hasParent {
+		cOpts = append(cOpts, WithParent(cfg.parent))
 	}
+	c, err := rec.Commit(ctx, cOpts...)
 	if err != nil {
 		return Commit{}, err
 	}
@@ -143,20 +133,6 @@ func (s *service) Seal(ctx context.Context, docID string, changes []Change, mess
 		_ = s.recordSeen(ctx, docID, cfg.idempotencyKey, c)
 	}
 	return c, nil
-}
-
-// sealBackoff sleeps a full-jitter exponential delay (0..base<<attempt),
-// returning early with ctx.Err() if the context ends first.
-func sealBackoff(ctx context.Context, attempt int) error {
-	d := rand.N(sealBackoffBase << attempt)
-	t := time.NewTimer(d)
-	defer t.Stop()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-t.C:
-		return nil
-	}
 }
 
 // Unwrap exposes the backing Log so callers holding only the Service interface

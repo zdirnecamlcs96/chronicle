@@ -1,11 +1,23 @@
-package chroniclekit
+package chronicleview
 
 import (
 	"reflect"
 	"testing"
 
 	changelog "github.com/zdirnecamlcs96/chronicle/core"
+	"github.com/zdirnecamlcs96/chronicle/kit/internal/docmodel"
+	chronicleschema "github.com/zdirnecamlcs96/chronicle/kit/schema"
 )
+
+// norm JSON-normalizes v for comparison with reconstructed/snapshot values.
+func norm(t *testing.T, v any) any {
+	t.Helper()
+	out, err := docmodel.Normalize(v)
+	if err != nil {
+		t.Fatalf("normalize: %v", err)
+	}
+	return out
+}
 
 func TestLCAPath(t *testing.T) {
 	cases := []struct {
@@ -29,13 +41,13 @@ func TestLCAPath(t *testing.T) {
 func TestReconstruct_NestedAndArray(t *testing.T) {
 	commits := []changelog.Commit{
 		{Changes: []changelog.Change{
-			{Path: "name", Kind: KindCreate, To: `"doc"`},
-			{Path: "items.0.qty", Kind: KindCreate, To: "1"},
-			{Path: "items.1.qty", Kind: KindCreate, To: "2"},
+			{Path: "name", Kind: chronicleschema.KindCreate, To: `"doc"`},
+			{Path: "items.0.qty", Kind: chronicleschema.KindCreate, To: "1"},
+			{Path: "items.1.qty", Kind: chronicleschema.KindCreate, To: "2"},
 		}},
 		{Changes: []changelog.Change{
-			{Path: "items.0.qty", Kind: KindPut, To: "9"},
-			{Path: "name", Kind: KindDelete},
+			{Path: "items.0.qty", Kind: chronicleschema.KindPut, To: "9"},
+			{Path: "name", Kind: chronicleschema.KindDelete},
 		}},
 	}
 	got, err := Reconstruct(commits)

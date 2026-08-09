@@ -1,12 +1,11 @@
 // Package changelogmemory provides the in-memory reference Log. It implements
-// changelog.Log plus the optional changelog.Indexer and changelog.Deduper
-// capabilities (cross-document queries and per-document idempotency), all in
-// process. It is ephemeral (history is lost on restart) and NOT for production:
-// AppendCommit stores whatever parent the Recorder computed, so concurrent
-// same-document appends can fork (it does not pass RunSerializableAppend). Use a
-// durable adapter (adapters/sql, adapters/clickhouse) in production; this is the
-// zero-config default for development, examples, and the conformance suite's
-// reference backend.
+// changelog.Log plus the optional changelog.Indexer, changelog.Deduper,
+// changelog.TailReader, and changelog.Snapshotter capabilities (cross-document
+// queries, per-document idempotency, cursor-resumed reads, and cached
+// snapshots), all in process. It is ephemeral (history is lost on restart) and
+// NOT for production. Use a durable adapter (adapters/sql,
+// adapters/clickhouse) in production; this is the zero-config default for
+// development, examples, and the conformance suite's reference backend.
 package changelogmemory
 
 import (
@@ -29,6 +28,17 @@ type Log struct {
 // different document is a distinct delivery and never replays another
 // document's commit.
 type seenKey struct{ docID, key string }
+
+// The port and every optional capability, asserted at compile time — the same
+// check an adapter author is told to write, kept honest on the reference
+// implementation too.
+var (
+	_ changelog.Log         = (*Log)(nil)
+	_ changelog.Indexer     = (*Log)(nil)
+	_ changelog.Deduper     = (*Log)(nil)
+	_ changelog.TailReader  = (*Log)(nil)
+	_ changelog.Snapshotter = (*Log)(nil)
+)
 
 // New returns an empty in-memory Log.
 func New() *Log {
@@ -215,11 +225,3 @@ func (m *Log) sortedDocIDs() []string {
 	sort.Strings(ids)
 	return ids
 }
-
-var (
-	_ changelog.Log         = (*Log)(nil)
-	_ changelog.Indexer     = (*Log)(nil)
-	_ changelog.Deduper     = (*Log)(nil)
-	_ changelog.TailReader  = (*Log)(nil)
-	_ changelog.Snapshotter = (*Log)(nil)
-)

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sync"
 	"testing"
 	"time"
 
@@ -127,6 +126,45 @@ func RunLogConformance(t *testing.T, newLog NewLog) {
 		}
 	})
 
+	t.Run("ForkAppend", func(t *testing.T) {
+		// Two writers building on the same parent both land: the Log does no
+		// concurrency control, so a fork is a recorded fact, not an error. Head
+		// stays the latest commit by arrival.
+		log, done := newLog(t)
+		defer done()
+		ctx := context.Background()
+		root := sealN(t, log, "doc", 1)[0]
+
+		var tick int64 = 10 // past sealN's clock, so arrival order is unambiguous
+		rec := changelog.NewRecorder("doc", log).WithClock(func() time.Time { tick++; return time.Unix(tick, 0).UTC() })
+		rec.Append(changelog.Change{Actor: "a", Path: "p", Kind: "put", To: "childA"})
+		a, err := rec.Commit(ctx, changelog.WithParent(root.ID))
+		if err != nil {
+			t.Fatalf("first child: %v", err)
+		}
+		rec.Append(changelog.Change{Actor: "a", Path: "p", Kind: "put", To: "childB"})
+		b, err := rec.Commit(ctx, changelog.WithParent(root.ID))
+		if err != nil {
+			t.Fatalf("forking child: %v", err)
+		}
+
+		got, err := log.Commits(ctx, "doc", 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertIDs(t, got, b.ID, a.ID, root.ID)
+		if err := changelog.Verify(ctx, log, "doc"); err != nil {
+			t.Fatalf("forked history must verify: %v", err)
+		}
+		h, err := log.Head(ctx, "doc")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if h != b.ID {
+			t.Fatalf("Head = %q, want last-arrived %q", h, b.ID)
+		}
+	})
+
 	t.Run("ContextCancellation", func(t *testing.T) {
 		log, done := newLog(t)
 		defer done()
@@ -144,72 +182,12 @@ func RunLogConformance(t *testing.T, newLog NewLog) {
 	})
 }
 
-// RunSerializableAppend is the stronger, opt-in contract: under concurrent seals
-// to the SAME document, the stored commits must form a single linear chain — no
-// two commits share a parent, exactly one root. A naive backend whose
-// AppendCommit blindly stores whatever parent the Recorder computed (e.g.
-// MemoryLog) forks here and must NOT run this; a backend that serializes appends
-// (e.g. the SQL adapter via FOR UPDATE + a unique (doc,parent) constraint)
-// passes. Conflicting seals are expected to fail and are ignored — the assertion
-// is about the final stored state, not that every goroutine succeeds.
-func RunSerializableAppend(t *testing.T, newLog NewLog) {
-	t.Helper()
-	log, done := newLog(t)
-	defer done()
-	ctx := context.Background()
-
-	const goroutines = 8
-	start := make(chan struct{})
-	var wg sync.WaitGroup
-	for i := 0; i < goroutines; i++ {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
-			rec := changelog.NewRecorder("doc", log)
-			rec.Append(changelog.Change{Actor: "a", Path: "p", Kind: "put", To: fmt.Sprintf("v%d", i)})
-			<-start
-			_, _ = rec.Commit(ctx) // parent conflicts are expected; ignore them
-		}(i)
-	}
-	close(start)
-	wg.Wait()
-
-	commits, err := log.Commits(ctx, "doc", 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(commits) == 0 {
-		t.Fatal("no commits landed under concurrent append")
-	}
-	byID := make(map[string]bool, len(commits))
-	for _, c := range commits {
-		byID[c.ID] = true
-	}
-	parents := make(map[string]bool, len(commits))
-	roots := 0
-	for _, c := range commits {
-		if parents[c.Parent] {
-			t.Fatalf("fork: two commits share parent %q", c.Parent)
-		}
-		parents[c.Parent] = true
-		if c.Parent == "" {
-			roots++
-			continue
-		}
-		if !byID[c.Parent] {
-			t.Fatalf("dangling parent %q points to no stored commit", c.Parent)
-		}
-	}
-	if roots != 1 {
-		t.Fatalf("want exactly one root (parent==\"\"), got %d", roots)
-	}
-}
-
 // RunDeduperConformance is the opt-in contract for backends that implement
 // changelog.Deduper: idempotency keys are scoped PER DOCUMENT. A key marked on
 // one document must not resolve on another — otherwise a replay would disclose,
 // and dedup against, an unrelated document's commit. Run it only against a
-// durable backend that implements Deduper (the memory reference does not).
+// backend that implements Deduper — every shipped adapter does, the durable
+// ones across a restart and adapters/memory in process.
 func RunDeduperConformance(t *testing.T, newLog NewLog) {
 	t.Helper()
 	log, done := newLog(t)
@@ -432,8 +410,6 @@ func RunSnapshotterConformance(t *testing.T, newLog NewLog) {
 // so every commit gets a distinct, increasing timestamp. This keeps the suite
 // portable: backends that order by seq (SQL) AND backends that order by
 // timestamp (ClickHouse, columnar) both return a deterministic newest-first.
-// Commits chain through the Log's Head, so a backend with a unique (doc,parent)
-// constraint accepts them (each parent is distinct).
 func sealN(t *testing.T, log changelog.Log, docID string, n int) []changelog.Commit {
 	t.Helper()
 	ctx := context.Background()

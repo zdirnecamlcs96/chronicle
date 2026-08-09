@@ -19,6 +19,10 @@ document.querySelectorAll('pre > code.language-mermaid').forEach(function (c) {
   pre.textContent = c.textContent;
   var wrap = document.createElement('div');
   wrap.className = 'diagram';
+  // A rendered diagram is an image to a screen reader. Mermaid ignores `%%`
+  // lines, so a source that opens with `%% alt: …` carries its own description.
+  var alt = (c.textContent.match(/^%%\s*alt:\s*(.+)$/m) || [])[1];
+  if (alt) { wrap.setAttribute('role', 'img'); wrap.setAttribute('aria-label', alt); }
   wrap.appendChild(pre);
   c.parentElement.replaceWith(wrap);
 });

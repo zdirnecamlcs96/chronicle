@@ -1,4 +1,13 @@
-package chroniclekit
+// Package chronicleview is the kit's read side: it replays recorded Changes
+// back into document state.
+//
+// Reconstruct is the plain fold over a chain. Reader adds the accelerated
+// paths — when the backend exposes core's optional Snapshotter and TailReader
+// (detected once, in New), a read serves from the stored snapshot plus a tail
+// replay instead of refetching the whole history. The snapshot is a pure
+// cache: deleting stored snapshots is always safe, and every fast path falls
+// back to a full rebuild rather than erroring.
+package chronicleview
 
 import (
 	"context"
@@ -7,7 +16,52 @@ import (
 	"fmt"
 
 	changelog "github.com/zdirnecamlcs96/chronicle/core"
+	"github.com/zdirnecamlcs96/chronicle/kit/internal/docmodel"
 )
+
+// Reader serves document state over a changelog.Service, using the backend's
+// snapshot and cursor capabilities when it has them.
+type Reader struct {
+	svc changelog.Service
+
+	// Optional backend capabilities discovered in New; both nil is fine and
+	// simply means State reads by full replay.
+	snap changelog.Snapshotter
+	tail changelog.TailReader
+}
+
+// New returns a Reader over svc. It detects the backend's optional Snapshotter
+// and TailReader capabilities by walking the Unwrap() chain from the Service
+// down through its Log (the same discovery NewService uses); a Service that
+// exposes no Unwrap simply gets full-replay reads.
+func New(svc changelog.Service) *Reader {
+	r := &Reader{svc: svc}
+	var l changelog.Log
+	if u, ok := svc.(interface{ Unwrap() changelog.Log }); ok {
+		l = u.Unwrap()
+	}
+	for l != nil {
+		if r.snap == nil {
+			if s, ok := l.(changelog.Snapshotter); ok {
+				r.snap = s
+			}
+		}
+		if r.tail == nil {
+			if tr, ok := l.(changelog.TailReader); ok {
+				r.tail = tr
+			}
+		}
+		if r.snap != nil && r.tail != nil {
+			break
+		}
+		u, ok := l.(interface{ Unwrap() changelog.Log })
+		if !ok {
+			break
+		}
+		l = u.Unwrap()
+	}
+	return r
+}
 
 // Reconstruct replays commits (OLDEST first) into a document state, applying each
 // change in order: put/create set the value at its path, delete removes it.
@@ -32,7 +86,7 @@ func replayInto(state any, commits []changelog.Commit) (any, error) {
 	cur := state
 	for _, c := range commits {
 		for _, ch := range c.Changes {
-			next, err := applyChange(cur, ch)
+			next, err := docmodel.Apply(cur, ch)
 			if err != nil {
 				return nil, fmt.Errorf("reconstruct %s %q: %w", ch.Kind, ch.Path, err)
 			}
@@ -42,95 +96,6 @@ func replayInto(state any, commits []changelog.Commit) (any, error) {
 	return cur, nil
 }
 
-func applyChange(root any, ch changelog.Change) (any, error) {
-	segs := splitPath(ch.Path)
-	if len(segs) == 0 {
-		return nil, fmt.Errorf("empty path")
-	}
-	switch ch.Kind {
-	case KindDelete:
-		return deleteIn(root, segs), nil
-	case KindCreate, KindPut:
-		// fall through to set below
-	default:
-		return nil, fmt.Errorf("unknown change kind %q", ch.Kind)
-	}
-	var val any
-	if ch.To != "" {
-		if err := json.Unmarshal([]byte(ch.To), &val); err != nil {
-			return nil, err
-		}
-	}
-	return setIn(root, segs, val), nil
-}
-
-// setIn sets val at segs within cur. The container kind is decided by cur's
-// RUNTIME type — an existing map treats a numeric segment as a string key (not an
-// index), so objects with numeric keys are preserved. Only when a container is
-// absent is it vivified by segment shape (numeric → array, else object). It
-// returns the (possibly new or grown) container so the caller can rebind it.
-func setIn(cur any, segs []string, val any) any {
-	seg := segs[0]
-	last := len(segs) == 1
-	switch c := cur.(type) {
-	case []any:
-		idx, ok := asIndex(seg)
-		if !ok {
-			// path says object key but container is an array — replace with a map.
-			return setIn(map[string]any{}, segs, val)
-		}
-		for len(c) <= idx {
-			c = append(c, nil)
-		}
-		if last {
-			c[idx] = val
-		} else {
-			c[idx] = setIn(c[idx], segs[1:], val)
-		}
-		return c
-	case map[string]any:
-		if last {
-			c[seg] = val
-		} else {
-			c[seg] = setIn(c[seg], segs[1:], val)
-		}
-		return c
-	default: // absent: vivify by segment shape
-		if _, ok := asIndex(seg); ok {
-			return setIn([]any{}, segs, val)
-		}
-		return setIn(map[string]any{}, segs, val)
-	}
-}
-
-// deleteIn removes the value at segs within cur, dispatching on cur's runtime
-// type. A mid-array index deletion shifts later elements (positional semantics).
-func deleteIn(cur any, segs []string) any {
-	seg := segs[0]
-	last := len(segs) == 1
-	switch c := cur.(type) {
-	case []any:
-		idx, ok := asIndex(seg)
-		if !ok || idx >= len(c) {
-			return c
-		}
-		if last {
-			return append(c[:idx], c[idx+1:]...)
-		}
-		c[idx] = deleteIn(c[idx], segs[1:])
-		return c
-	case map[string]any:
-		if last {
-			delete(c, seg)
-		} else if child, present := c[seg]; present {
-			c[seg] = deleteIn(child, segs[1:])
-		}
-		return c
-	default:
-		return cur
-	}
-}
-
 // getAt navigates root to segs (dispatching on runtime type, so numeric object
 // keys resolve correctly), returning the value and whether it was found.
 func getAt(root map[string]any, segs []string) (any, bool) {
@@ -138,7 +103,7 @@ func getAt(root map[string]any, segs []string) (any, bool) {
 	for _, s := range segs {
 		switch c := cur.(type) {
 		case []any:
-			idx, ok := asIndex(s)
+			idx, ok := docmodel.AsIndex(s)
 			if !ok || idx >= len(c) {
 				return nil, false
 			}
@@ -167,9 +132,9 @@ func lcaPath(paths []string) string {
 	if len(paths) == 0 {
 		return ""
 	}
-	prefix := splitPath(paths[0])
+	prefix := docmodel.SplitPath(paths[0])
 	for _, p := range paths[1:] {
-		segs := splitPath(p)
+		segs := docmodel.SplitPath(p)
 		j := 0
 		for j < len(prefix) && j < len(segs) && prefix[j] == segs[j] {
 			j++
@@ -179,7 +144,7 @@ func lcaPath(paths []string) string {
 			return ""
 		}
 	}
-	return joinPath(prefix)
+	return docmodel.JoinPath(prefix)
 }
 
 // State reconstructs docID's current state at HEAD. When the backend exposes
@@ -187,33 +152,46 @@ func lcaPath(paths []string) string {
 // snapshot plus a tail replay instead of refetching the whole history, and
 // refreshes the snapshot afterwards — turning reads on long histories from
 // O(all commits) into O(commits since last read).
-func (k *Kit) State(ctx context.Context, docID string) (map[string]any, error) {
-	if k.snap != nil && k.tail != nil {
-		if st, ok, err := k.snapshotState(ctx, docID); err != nil {
-			return nil, err
+func (r *Reader) State(ctx context.Context, docID string) (map[string]any, error) {
+	st, _, err := r.StateWithHead(ctx, docID)
+	return st, err
+}
+
+// StateWithHead is State plus the ID of the commit the returned state was
+// reconstructed at ("" for a document with no commits). A writer building on
+// this state passes that ID as the commit's parent (changelog.WithParent) so
+// the log records which snapshot the changes were actually diffed against.
+func (r *Reader) StateWithHead(ctx context.Context, docID string) (map[string]any, string, error) {
+	if r.snap != nil && r.tail != nil {
+		if st, head, ok, err := r.snapshotState(ctx, docID); err != nil {
+			return nil, "", err
 		} else if ok {
-			return st, nil
+			return st, head, nil
 		}
 	}
-	commits, err := k.svc.Commits(ctx, docID, 0) // newest-first
+	commits, err := r.svc.Commits(ctx, docID, 0) // newest-first
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	st, err := Reconstruct(reversed(commits))
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	if k.snap != nil && len(commits) > 0 {
-		k.saveSnapshot(ctx, docID, commits[0].ID, st) // prime the cache
+	head := ""
+	if len(commits) > 0 {
+		head = commits[0].ID
 	}
-	return st, nil
+	if r.snap != nil && head != "" {
+		r.saveSnapshot(ctx, docID, head, st) // prime the cache
+	}
+	return st, head, nil
 }
 
 // loadBase loads and decodes docID's stored snapshot. ok=false means "no
 // usable snapshot" (none stored, or corrupt/foreign bytes) — the caller falls
 // back to a full rebuild.
-func (k *Kit) loadBase(ctx context.Context, docID string) (base map[string]any, commitID string, ok bool, err error) {
-	s, ok, err := k.snap.LoadSnapshot(ctx, docID)
+func (r *Reader) loadBase(ctx context.Context, docID string) (base map[string]any, commitID string, ok bool, err error) {
+	s, ok, err := r.snap.LoadSnapshot(ctx, docID)
 	if err != nil || !ok {
 		return nil, "", false, err
 	}
@@ -223,47 +201,49 @@ func (k *Kit) loadBase(ctx context.Context, docID string) (base map[string]any, 
 	return base, s.CommitID, true, nil
 }
 
-// snapshotState serves State from the stored snapshot plus tail replay.
-// ok=false means "fall back to a full rebuild" (no snapshot, undecodable
-// bytes, an orphaned cursor, or a non-object root after replay) — never an
-// error, because the full history can always answer.
-func (k *Kit) snapshotState(ctx context.Context, docID string) (map[string]any, bool, error) {
-	base, snapID, ok, err := k.loadBase(ctx, docID)
+// snapshotState serves State from the stored snapshot plus tail replay,
+// returning the head commit ID the state was replayed to. ok=false means
+// "fall back to a full rebuild" (no snapshot, undecodable bytes, an orphaned
+// cursor, or a non-object root after replay) — never an error, because the
+// full history can always answer.
+func (r *Reader) snapshotState(ctx context.Context, docID string) (map[string]any, string, bool, error) {
+	base, snapID, ok, err := r.loadBase(ctx, docID)
 	if err != nil || !ok {
-		return nil, false, err
+		return nil, "", false, err
 	}
-	tail, err := k.tail.CommitsAfter(ctx, docID, snapID, 0) // oldest-first
+	tail, err := r.tail.CommitsAfter(ctx, docID, snapID, 0) // oldest-first
 	if errors.Is(err, changelog.ErrNoSuchCommit) {
-		return nil, false, nil // snapshot outlived its commit (doc reset): rebuild
+		return nil, "", false, nil // snapshot outlived its commit (doc reset): rebuild
 	}
 	if err != nil {
-		return nil, false, err
+		return nil, "", false, err
 	}
 	if len(tail) == 0 {
-		return base, true, nil
+		return base, snapID, true, nil
 	}
 	next, err := replayInto(base, tail)
 	if err != nil {
-		return nil, false, err
+		return nil, "", false, err
 	}
 	m, isObj := next.(map[string]any)
 	if !isObj {
-		return nil, false, nil
+		return nil, "", false, nil
 	}
+	head := tail[len(tail)-1].ID
 	// ponytail: snapshot refreshed on every read that replayed a tail; add a
 	// commit-count threshold if the upsert traffic ever matters.
-	k.saveSnapshot(ctx, docID, tail[len(tail)-1].ID, m)
-	return m, true, nil
+	r.saveSnapshot(ctx, docID, head, m)
+	return m, head, true, nil
 }
 
 // saveSnapshot marshals and stores state as of commitID, best-effort (like
 // Deduper.MarkSeen: a failure only means a colder next read, never an error).
-func (k *Kit) saveSnapshot(ctx context.Context, docID, commitID string, state map[string]any) {
+func (r *Reader) saveSnapshot(ctx context.Context, docID, commitID string, state map[string]any) {
 	b, err := json.Marshal(state)
 	if err != nil {
 		return
 	}
-	_ = k.snap.SaveSnapshot(ctx, changelog.Snapshot{DocID: docID, CommitID: commitID, State: b})
+	_ = r.snap.SaveSnapshot(ctx, changelog.Snapshot{DocID: docID, CommitID: commitID, State: b})
 }
 
 // StateAt reconstructs docID's state as of (and including) commitID. An empty
@@ -271,15 +251,15 @@ func (k *Kit) saveSnapshot(ctx context.Context, docID, commitID string, state ma
 // When the backend exposes Snapshotter+TailReader and commitID is at or after
 // the stored snapshot, it replays only the tail — O(commits since snapshot);
 // older targets fall back to a full replay.
-func (k *Kit) StateAt(ctx context.Context, docID, commitID string) (map[string]any, error) {
-	if commitID != "" && k.snap != nil && k.tail != nil {
-		if st, ok, err := k.snapshotStateAt(ctx, docID, commitID); err != nil {
+func (r *Reader) StateAt(ctx context.Context, docID, commitID string) (map[string]any, error) {
+	if commitID != "" && r.snap != nil && r.tail != nil {
+		if st, ok, err := r.snapshotStateAt(ctx, docID, commitID); err != nil {
 			return nil, err
 		} else if ok {
 			return st, nil
 		}
 	}
-	commits, err := k.svc.Commits(ctx, docID, 0)
+	commits, err := r.svc.Commits(ctx, docID, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -291,15 +271,15 @@ func (k *Kit) StateAt(ctx context.Context, docID, commitID string) (map[string]a
 // an orphaned cursor, or commitID not in the tail (older than the snapshot, or
 // not on the document at all; the full path tells those apart). It NEVER
 // refreshes the snapshot: a historical read must not move the HEAD cache.
-func (k *Kit) snapshotStateAt(ctx context.Context, docID, commitID string) (map[string]any, bool, error) {
-	base, snapID, ok, err := k.loadBase(ctx, docID)
+func (r *Reader) snapshotStateAt(ctx context.Context, docID, commitID string) (map[string]any, bool, error) {
+	base, snapID, ok, err := r.loadBase(ctx, docID)
 	if err != nil || !ok {
 		return nil, false, err
 	}
 	if snapID == commitID {
 		return base, true, nil
 	}
-	tail, err := k.tail.CommitsAfter(ctx, docID, snapID, 0) // oldest-first
+	tail, err := r.tail.CommitsAfter(ctx, docID, snapID, 0) // oldest-first
 	if errors.Is(err, changelog.ErrNoSuchCommit) {
 		return nil, false, nil
 	}
@@ -339,7 +319,7 @@ func stateUpTo(commits []changelog.Commit, commitID string) (map[string]any, err
 			}
 		}
 		if !found {
-			return nil, fmt.Errorf("chroniclekit: commit %q not found", commitID)
+			return nil, fmt.Errorf("chronicleview: commit %q not found", commitID)
 		}
 	}
 	return Reconstruct(upto)
@@ -350,15 +330,15 @@ func stateUpTo(commits []changelog.Commit, commitID string) (map[string]any, err
 // Scope = lcaPath of the commit's changed paths; if that scope is a scalar/leaf
 // or missing in the parent state, it climbs to the enclosing container. When
 // changes scatter (LCA = root) the snapshot is the whole prior document.
-func (k *Kit) CommitSnapshot(ctx context.Context, docID, commitID string) (any, error) {
-	if k.snap != nil && k.tail != nil {
-		if v, ok, err := k.snapshotCommitScope(ctx, docID, commitID); err != nil {
+func (r *Reader) CommitSnapshot(ctx context.Context, docID, commitID string) (any, error) {
+	if r.snap != nil && r.tail != nil {
+		if v, ok, err := r.snapshotCommitScope(ctx, docID, commitID); err != nil {
 			return nil, err
 		} else if ok {
 			return v, nil
 		}
 	}
-	commits, err := k.svc.Commits(ctx, docID, 0)
+	commits, err := r.svc.Commits(ctx, docID, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -370,7 +350,7 @@ func (k *Kit) CommitSnapshot(ctx context.Context, docID, commitID string) (any, 
 		}
 	}
 	if target == nil {
-		return nil, fmt.Errorf("chroniclekit: commit %q not found in %q", commitID, docID)
+		return nil, fmt.Errorf("chronicleview: commit %q not found in %q", commitID, docID)
 	}
 	before, err := stateUpTo(commits, target.Parent) // reuse the already-fetched list
 	if err != nil {
@@ -384,15 +364,15 @@ func (k *Kit) CommitSnapshot(ctx context.Context, docID, commitID string) (any, 
 // target's parent. ok=false falls back to the full path (no usable snapshot,
 // orphaned cursor, or target at/before the snapshot — its before-state
 // predates the base). Never refreshes the snapshot.
-func (k *Kit) snapshotCommitScope(ctx context.Context, docID, commitID string) (any, bool, error) {
-	base, snapID, ok, err := k.loadBase(ctx, docID)
+func (r *Reader) snapshotCommitScope(ctx context.Context, docID, commitID string) (any, bool, error) {
+	base, snapID, ok, err := r.loadBase(ctx, docID)
 	if err != nil || !ok {
 		return nil, false, err
 	}
 	if snapID == commitID {
 		return nil, false, nil
 	}
-	tail, err := k.tail.CommitsAfter(ctx, docID, snapID, 0) // oldest-first
+	tail, err := r.tail.CommitsAfter(ctx, docID, snapID, 0) // oldest-first
 	if errors.Is(err, changelog.ErrNoSuchCommit) {
 		return nil, false, nil
 	}
@@ -426,10 +406,10 @@ func lcaScope(before map[string]any, target *changelog.Commit) any {
 		paths[i] = c.Path
 	}
 	scope := lcaPath(paths)
-	val, ok := getAt(before, splitPath(scope))
-	for scope != "" && (!ok || !isContainer(val)) {
-		scope = parentPath(scope)
-		val, ok = getAt(before, splitPath(scope))
+	val, ok := getAt(before, docmodel.SplitPath(scope))
+	for scope != "" && (!ok || !docmodel.IsContainer(val)) {
+		scope = docmodel.ParentPath(scope)
+		val, ok = getAt(before, docmodel.SplitPath(scope))
 	}
 	if scope == "" {
 		return before // root → whole prior document

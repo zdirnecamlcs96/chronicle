@@ -9,10 +9,9 @@ import (
 	"github.com/zdirnecamlcs96/chronicle/core/conformance"
 )
 
-// The memory adapter must satisfy the mandatory Log contract. It does NOT run
-// RunSerializableAppend: its AppendCommit stores whatever parent the Recorder
-// computed, so concurrent same-doc seals can fork — that durability guarantee
-// is the job of a real backend (adapters/sql).
+// The memory adapter must satisfy the mandatory Log contract, ForkAppend
+// included: AppendCommit stores whatever parent the writer asserted, so two
+// commits sharing a parent are a recorded fork, not an error.
 func TestMemoryLog_Conformance(t *testing.T) {
 	conformance.RunLogConformance(t, func(t *testing.T) (changelog.Log, func()) {
 		return changelogmemory.New(), func() {}

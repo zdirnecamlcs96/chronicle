@@ -1,26 +1,37 @@
-package chroniclekit
+// Package chronicleexplain is the kit's display side: it replays a chain of
+// commits and decorates every recorded Change with the metadata a human
+// display needs — label trails, keyed-element identity and names, bookkeeping
+// flags, and container values broken down as ValueNode trees.
+//
+// Everything here is derived at READ time from the replayed revisions, under
+// the schema the caller declares on the call. Nothing display-shaped is ever
+// stored, so records written long before any schema existed decorate exactly
+// like new ones, and changing the schema changes only how history reads —
+// never what it says.
+package chronicleexplain
 
 import (
-	"encoding/json"
 	"fmt"
 	"maps"
 	"sort"
 	"strconv"
 
 	changelog "github.com/zdirnecamlcs96/chronicle/core"
+	"github.com/zdirnecamlcs96/chronicle/kit/internal/docmodel"
+	chronicleschema "github.com/zdirnecamlcs96/chronicle/kit/schema"
 )
 
 // Element identifies the keyed array element a change sits inside.
 type Element struct {
-	Trail []string // label trail of the containing array, from the document root
-	Name  string   // element display name
-	ID    string   // element identity value, human form
+	Trail []string `json:"trail,omitempty"` // label trail of the containing array, from the document root
+	Name  string   `json:"name,omitempty"`  // element display name
+	ID    string   `json:"id,omitempty"`    // element identity value, human form
 }
 
 // Display carries resolved display names for id-valued From/To values.
 type Display struct {
-	From string
-	To   string
+	From string `json:"from,omitempty"`
+	To   string `json:"to,omitempty"`
 }
 
 // Explained decorates one recorded Change with display metadata derived at
@@ -38,14 +49,19 @@ type Display struct {
 //   - FromValue/ToValue a container From/To decomposed as a ValueNode tree —
 //     everything a display needs to break the value down per field without
 //     re-implementing the schema walk. Nil when the side is scalar or absent.
+//
+// The json tags are snake_case so a row serializes consistently with the rest
+// of a JSON API. The embedded Change inlines, keeping Path — the raw dotted
+// path — on every row: it is the stable key a client translates from when it
+// wants its own i18n labels rather than the Title Case fallback in Field.
 type Explained struct {
 	changelog.Change
-	Field       []string
-	Element     *Element
-	Display     *Display
-	Bookkeeping bool
-	FromValue   *ValueNode
-	ToValue     *ValueNode
+	Field       []string   `json:"field,omitempty"`
+	Element     *Element   `json:"element,omitempty"`
+	Display     *Display   `json:"display,omitempty"`
+	Bookkeeping bool       `json:"bookkeeping,omitempty"`
+	FromValue   *ValueNode `json:"from_value,omitempty"`
+	ToValue     *ValueNode `json:"to_value,omitempty"`
 }
 
 // ValueNode is a container value decomposed for display under the caller's
@@ -68,12 +84,12 @@ type Explained struct {
 //     the same mark rows carry, so displays fold noise inside the tree too.
 //   - Kids   the container's children; nil at leaves.
 type ValueNode struct {
-	Label       string
-	Value       string
-	Display     string
-	List        bool
-	Bookkeeping bool
-	Kids        []ValueNode
+	Label       string      `json:"label,omitempty"`
+	Value       string      `json:"value,omitempty"`
+	Display     string      `json:"display,omitempty"`
+	List        bool        `json:"list,omitempty"`
+	Bookkeeping bool        `json:"bookkeeping,omitempty"`
+	Kids        []ValueNode `json:"kids,omitempty"`
 }
 
 // Explain replays commits (the chain from root, OLDEST first — same contract
@@ -94,20 +110,20 @@ type ValueNode struct {
 //
 // ponytail: each commit costs one extra deep copy + two name walks, O(doc);
 // derive incrementally if huge chains ever make rendering slow.
-func Explain(commits []changelog.Commit, opts ...DiffOption) ([][]Explained, error) {
-	cfg := newDiffConfig(opts)
+func Explain(commits []changelog.Commit, opts ...chronicleschema.Option) ([][]Explained, error) {
+	cfg := chronicleschema.New(opts...)
 	out := make([][]Explained, len(commits))
 	var cur any // nil root so the first change vivifies object or array docs alike
 	for i, c := range commits {
 		names := map[string]string{}
-		maps.Copy(names, cfg.names) // WithNames seeds; the document overwrites
+		maps.Copy(names, cfg.Names()) // WithNames seeds; the document overwrites
 		walkNames(&cfg, cur, nil, names)
-		after, err := normalize(cur) // deep copy
+		after, err := docmodel.Normalize(cur) // deep copy
 		if err != nil {
 			return nil, err
 		}
 		for _, ch := range c.Changes {
-			if after, err = applyChange(after, ch); err != nil {
+			if after, err = docmodel.Apply(after, ch); err != nil {
 				return nil, fmt.Errorf("explain %s %q: %w", ch.Kind, ch.Path, err)
 			}
 		}
@@ -116,7 +132,7 @@ func Explain(commits []changelog.Commit, opts ...DiffOption) ([][]Explained, err
 		rows := make([]Explained, len(c.Changes))
 		for j, ch := range c.Changes {
 			rows[j] = decorate(&cfg, cur, ch, names)
-			if cur, err = applyChange(cur, ch); err != nil {
+			if cur, err = docmodel.Apply(cur, ch); err != nil {
 				return nil, fmt.Errorf("explain %s %q: %w", ch.Kind, ch.Path, err)
 			}
 		}
@@ -128,9 +144,9 @@ func Explain(commits []changelog.Commit, opts ...DiffOption) ([][]Explained, err
 // decorate derives one change's display metadata by walking its path through
 // the pre-change document state, classifying each segment by the container it
 // actually traverses (array index vs object key — no guessing).
-func decorate(cfg *diffConfig, state any, ch changelog.Change, names map[string]string) Explained {
+func decorate(cfg *chronicleschema.Config, state any, ch changelog.Change, names map[string]string) Explained {
 	ex := Explained{Change: ch, Display: displayFor(names, ch)}
-	segs := splitPath(ch.Path)
+	segs := docmodel.SplitPath(ch.Path)
 	if len(segs) == 0 {
 		return ex
 	}
@@ -139,18 +155,18 @@ func decorate(cfg *diffConfig, state any, ch changelog.Change, names map[string]
 	fieldStart := 0
 	cur := state
 	for si, seg := range segs {
-		idx, isNum := asIndex(seg)
+		idx, isNum := docmodel.AsIndex(seg)
 		arr, isArr := cur.([]any)
 		// Mirror setIn's vivification rule: numeric segments address arrays,
 		// existing maps keep numeric keys as object keys.
 		if isNum && (isArr || cur == nil) {
 			elVal := elemAt(cur, idx)
-			if elVal == nil && si == len(segs)-1 && ch.Kind == KindCreate {
-				elVal = parseJSON(ch.To) // incoming element, not in pre-change state
+			if elVal == nil && si == len(segs)-1 && ch.Kind == chronicleschema.KindCreate {
+				elVal = docmodel.ParseJSON(ch.To) // incoming element, not in pre-change state
 			}
 			if obj, isObj := elVal.(map[string]any); isObj {
-				if kp, ok := readKey(cfg, schema, arr); ok {
-					if kv, kok := elemKeyValue(obj, kp); kok && kv != nil && !isContainer(kv) {
+				if kp, ok := cfg.IdentityKey(schema, arr); ok {
+					if kv, kok := docmodel.ElemKeyValue(obj, kp); kok && kv != nil && !docmodel.IsContainer(kv) {
 						elem = &Element{ // innermost keyed element wins
 							Trail: append([]string(nil), trail...),
 							ID:    humanScalar(kv),
@@ -167,8 +183,8 @@ func decorate(cfg *diffConfig, state any, ch changelog.Change, names map[string]
 			continue
 		}
 		schema = append(schema, seg)
-		trail = append(trail, labelFor(cfg, schema))
-		if bookkeeping(cfg, seg, schema) {
+		trail = append(trail, cfg.Label(schema))
+		if cfg.Bookkeeping(seg, schema) {
 			ex.Bookkeeping = true
 		}
 		if m, isMap := cur.(map[string]any); isMap {
@@ -189,9 +205,9 @@ func decorate(cfg *diffConfig, state any, ch changelog.Change, names map[string]
 // containerValue decomposes a container From/To into its ValueNode tree; nil
 // for scalars and absent values. schema is the change's index-free path, so
 // nested arrays inside the value resolve their WithArrayKeys identity.
-func containerValue(cfg *diffConfig, schema []string, raw string, names map[string]string) *ValueNode {
-	v := parseJSON(raw)
-	if !isContainer(v) {
+func containerValue(cfg *chronicleschema.Config, schema []string, raw string, names map[string]string) *ValueNode {
+	v := docmodel.ParseJSON(raw)
+	if !docmodel.IsContainer(v) {
 		return nil
 	}
 	label := ""
@@ -201,7 +217,7 @@ func containerValue(cfg *diffConfig, schema []string, raw string, names map[stri
 		// whole-element add/remove — so its name can live on the object holding
 		// its identity, exactly as it does for Element.Name.
 		if label == "" {
-			if kp, ok := readKey(cfg, schema, []any{v}); ok {
+			if kp, ok := cfg.IdentityKey(schema, []any{v}); ok {
 				if idObj := identityObject(obj, kp); idObj != nil {
 					label = nameField(cfg, idObj)
 				}
@@ -212,7 +228,7 @@ func containerValue(cfg *diffConfig, schema []string, raw string, names map[stri
 	return &n
 }
 
-func valueNode(cfg *diffConfig, schema []string, label string, v any, names map[string]string) ValueNode {
+func valueNode(cfg *chronicleschema.Config, schema []string, label string, v any, names map[string]string) ValueNode {
 	n := ValueNode{Label: label}
 	switch t := v.(type) {
 	case map[string]any:
@@ -222,18 +238,18 @@ func valueNode(cfg *diffConfig, schema []string, label string, v any, names map[
 		}
 		sort.Strings(keys)
 		for _, k := range keys {
-			cs := childPath(schema, k)
-			kid := valueNode(cfg, cs, labelFor(cfg, cs), t[k], names)
-			kid.Bookkeeping = bookkeeping(cfg, k, cs)
+			cs := docmodel.ChildPath(schema, k)
+			kid := valueNode(cfg, cs, cfg.Label(cs), t[k], names)
+			kid.Bookkeeping = cfg.Bookkeeping(k, cs)
 			n.Kids = append(n.Kids, kid)
 		}
 	case []any:
 		n.List = true
-		kp, keyed := readKey(cfg, schema, t)
+		kp, keyed := cfg.IdentityKey(schema, t)
 		for i, el := range t {
 			lbl := strconv.Itoa(i)
 			if obj, isObj := el.(map[string]any); isObj && keyed {
-				if kv, ok := elemKeyValue(obj, kp); ok && kv != nil && !isContainer(kv) {
+				if kv, ok := docmodel.ElemKeyValue(obj, kp); ok && kv != nil && !docmodel.IsContainer(kv) {
 					lbl = resolveName(cfg, obj, kp, kv, names)
 				}
 			}
@@ -241,36 +257,15 @@ func valueNode(cfg *diffConfig, schema []string, label string, v any, names map[
 			n.Kids = append(n.Kids, valueNode(cfg, schema, lbl, el, names))
 		}
 	default:
-		n.Value = mustJSON(v)
+		n.Value = docmodel.CanonJSON(v)
 		n.Display = names[n.Value] // "" unless the leaf is a known id
 	}
 	return n
 }
 
-// bookkeeping reports whether the field at schema (whose final segment is
-// seg) is a WithIgnoredFields entry: its bare name, or its schema path.
-// Subtree coverage needs no prefix walk here — decorate checks every segment
-// as it descends, and valueNode marks the ancestor node itself.
-func bookkeeping(cfg *diffConfig, seg string, schema []string) bool {
-	if _, ok := cfg.ignoredNames[seg]; ok {
-		return true
-	}
-	_, ok := cfg.ignoredPaths[joinPath(schema)]
-	return ok
-}
-
-// readKey is the read-time identity chain for the array at schema — the same
-// chain the write side walks, judged against the one revision in hand: usable
-// when the elements present hold unique scalars at the key path (an
-// absent/empty array passes vacuously; the element under decoration still
-// decides for itself).
-func readKey(cfg *diffConfig, schema []string, side []any) ([]string, bool) {
-	return identityKey(cfg, schema, func(kp []string) bool { return usableKey(kp, side) })
-}
-
 // nameField returns obj's first non-empty configured name field, "" if none.
-func nameField(cfg *diffConfig, obj map[string]any) string {
-	for _, nf := range cfg.nameFields {
+func nameField(cfg *chronicleschema.Config, obj map[string]any) string {
+	for _, nf := range cfg.NameFields() {
 		if s, ok := obj[nf].(string); ok && s != "" {
 			return s
 		}
@@ -285,7 +280,7 @@ func identityObject(obj map[string]any, keyPath []string) map[string]any {
 	if len(keyPath) < 2 {
 		return nil
 	}
-	v, ok := elemKeyValue(obj, keyPath[:len(keyPath)-1])
+	v, ok := docmodel.ElemKeyValue(obj, keyPath[:len(keyPath)-1])
 	if !ok {
 		return nil
 	}
@@ -298,7 +293,7 @@ func identityObject(obj map[string]any, keyPath []string) map[string]any {
 // that path descends into, else the id→name index, else the id itself. An
 // element may name itself; that is a different question from what the entity
 // it carries is called, which is why indexNames does not share this order.
-func resolveName(cfg *diffConfig, obj map[string]any, keyPath []string, keyValue any, names map[string]string) string {
+func resolveName(cfg *chronicleschema.Config, obj map[string]any, keyPath []string, keyValue any, names map[string]string) string {
 	if s := nameField(cfg, obj); s != "" {
 		return s
 	}
@@ -307,7 +302,7 @@ func resolveName(cfg *diffConfig, obj map[string]any, keyPath []string, keyValue
 			return s
 		}
 	}
-	if n, ok := names[mustJSON(keyValue)]; ok {
+	if n, ok := names[docmodel.CanonJSON(keyValue)]; ok {
 		return n
 	}
 	return humanScalar(keyValue)
@@ -317,19 +312,19 @@ func resolveName(cfg *diffConfig, obj map[string]any, keyPath []string, keyValue
 // scalar at a WithIdentityFields entry plus a non-empty name field, and
 // elements of configured keyed arrays via their declared key. With no identity
 // fields declared the generic sweep does nothing — the kit guesses no names.
-func walkNames(cfg *diffConfig, doc any, schema []string, names map[string]string) {
+func walkNames(cfg *chronicleschema.Config, doc any, schema []string, names map[string]string) {
 	switch v := doc.(type) {
 	case map[string]any:
-		for _, f := range cfg.identityFields {
+		for _, f := range cfg.IdentityFields() {
 			indexNames(cfg, v, []string{f}, names)
 		}
 		for k, child := range v {
-			walkNames(cfg, child, childPath(schema, k), names)
+			walkNames(cfg, child, docmodel.ChildPath(schema, k), names)
 		}
 	case []any:
 		var kp []string
-		if p, ok := cfg.arrayKeys[joinPath(schema)]; ok {
-			kp = splitPath(p)
+		if p, ok := cfg.ArrayKey(schema); ok {
+			kp = p
 		}
 		for _, el := range v {
 			if obj, isObj := el.(map[string]any); isObj && kp != nil {
@@ -345,9 +340,9 @@ func walkNames(cfg *diffConfig, doc any, schema []string, names map[string]strin
 // the object a dot-path descends into otherwise. The index is global, read back
 // for any id anywhere (displayFor, ValueNode.Display), so an element's own name
 // must never be filed against an id it merely carries.
-func indexNames(cfg *diffConfig, obj map[string]any, keyPath []string, names map[string]string) {
-	kv, ok := elemKeyValue(obj, keyPath)
-	if !ok || kv == nil || isContainer(kv) {
+func indexNames(cfg *chronicleschema.Config, obj map[string]any, keyPath []string, names map[string]string) {
+	kv, ok := docmodel.ElemKeyValue(obj, keyPath)
+	if !ok || kv == nil || docmodel.IsContainer(kv) {
 		return
 	}
 	owner := obj
@@ -355,7 +350,7 @@ func indexNames(cfg *diffConfig, obj map[string]any, keyPath []string, names map
 		owner = idObj
 	}
 	if s := nameField(cfg, owner); s != "" {
-		names[mustJSON(kv)] = s
+		names[docmodel.CanonJSON(kv)] = s
 	}
 }
 
@@ -372,13 +367,7 @@ func humanScalar(v any) string {
 	if s, ok := v.(string); ok {
 		return s
 	}
-	return mustJSON(v)
-}
-
-func parseJSON(s string) any {
-	var v any
-	json.Unmarshal([]byte(s), &v) //nolint:errcheck // malformed To just yields no metadata
-	return v
+	return docmodel.CanonJSON(v)
 }
 
 func elemAt(v any, idx int) any {

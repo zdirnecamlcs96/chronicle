@@ -6,17 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 	"unicode/utf8"
 
 	"github.com/go-sql-driver/mysql"
 	"github.com/zdirnecamlcs96/chronicle/core"
 )
-
-// ErrParentConflict is the core changelog.ErrParentConflict sentinel, re-exported
-// for convenience. AppendCommit returns it when the commit's Parent no longer
-// matches the document's current head; the caller re-reads Head and re-seals.
-var ErrParentConflict = changelog.ErrParentConflict
 
 // Log is a durable changelog.Log backed by a SQL database.
 type Log struct {
@@ -38,7 +34,9 @@ func WithDialect(d Dialect) Option { return func(c *config) { c.dialect = d } }
 // WithMigrate runs Migrate during Open.
 func WithMigrate(m bool) Option { return func(c *config) { c.migrate = m } }
 
-// New wraps an existing *sql.DB (e.g. a shared pool, or a test handle).
+// New wraps an existing *sql.DB (e.g. a shared pool, or a test handle). Options
+// that only apply to Open, such as WithMigrate, are ignored here; callers
+// wrapping a pool that needs migrating should call Migrate themselves.
 func New(db *sql.DB, opts ...Option) *Log {
 	cfg := config{dialect: MySQL}
 	for _, o := range opts {
@@ -77,10 +75,11 @@ func (l *Log) Close() error { return l.db.Close() }
 
 var _ changelog.Log = (*Log)(nil)
 
-// AppendCommit stores one commit. It serializes concurrent appends to the same
-// document with SELECT ... FOR UPDATE on the head row and derives the next seq;
-// the unique (doc_id, parent) constraint is the correctness floor. A stale
-// parent (or a duplicate) yields ErrParentConflict.
+// AppendCommit stores one commit. The transaction's SELECT ... FOR UPDATE on
+// the head row serializes seq assignment per document; the commit's Parent is
+// stored verbatim — a writer building on a non-tip parent records a fork, not
+// an error. Re-appending an identical commit (same document, same content-hash
+// id) is a no-op, so an at-least-once replay lands exactly one row.
 func (l *Log) AppendCommit(ctx context.Context, docID string, c changelog.Commit) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -97,6 +96,31 @@ func (l *Log) AppendCommit(ctx context.Context, docID string, c changelog.Commit
 		return fmt.Errorf("changelog-sql: marshal changes: %w", err)
 	}
 
+	// Two writers on an EMPTY document race to seq 1: both see no head row, and
+	// the FOR UPDATE gap lock cannot order inserts under it, so the loser hits
+	// the (doc_id, seq) PRIMARY KEY — or an InnoDB deadlock — and re-derives a
+	// fresh seq. ponytail: 5 attempts, matching the writers a gap-lock pileup
+	// realistically holds; raise if a hammer test ever exhausts it.
+	const maxAttempts = 5
+	for attempt := 0; ; attempt++ {
+		err := l.appendOnce(ctx, docID, c, authors, changes)
+		switch {
+		case err == nil:
+			return nil
+		case isDuplicateOfKey(err, "uq_commit_id"):
+			// The identical commit is already stored — an at-least-once replay.
+			return nil
+		case attempt < maxAttempts-1 && (isDuplicateOfKey(err, "PRIMARY") || isDeadlock(err)):
+			continue
+		default:
+			return err
+		}
+	}
+}
+
+// appendOnce runs one insert attempt in its own transaction. Duplicate-key
+// errors come back unwrapped enough for AppendCommit to classify by index name.
+func (l *Log) appendOnce(ctx context.Context, docID string, c changelog.Commit, authors, changes []byte) error {
 	tx, err := l.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("changelog-sql: begin: %w", err)
@@ -104,18 +128,14 @@ func (l *Log) AppendCommit(ctx context.Context, docID string, c changelog.Commit
 	defer func() { _ = tx.Rollback() }()
 
 	var headSeq uint64
-	var headID string
 	err = tx.QueryRowContext(ctx,
-		`SELECT seq, id FROM commits WHERE doc_id = ? ORDER BY seq DESC LIMIT 1 FOR UPDATE`,
-		docID).Scan(&headSeq, &headID)
+		`SELECT seq FROM commits WHERE doc_id = ? ORDER BY seq DESC LIMIT 1 FOR UPDATE`,
+		docID).Scan(&headSeq)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
-		headSeq, headID = 0, ""
+		headSeq = 0
 	case err != nil:
 		return fmt.Errorf("changelog-sql: head: %w", err)
-	}
-	if c.Parent != headID {
-		return ErrParentConflict
 	}
 
 	_, err = tx.ExecContext(ctx,
@@ -123,9 +143,6 @@ func (l *Log) AppendCommit(ctx context.Context, docID string, c changelog.Commit
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		docID, headSeq+1, c.ID, c.Parent, c.At.UTC(), authors, c.Message, changes)
 	if err != nil {
-		if isDuplicate(err) {
-			return ErrParentConflict
-		}
 		return fmt.Errorf("changelog-sql: insert: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -198,9 +215,18 @@ func scanCommit(s scanner) (changelog.Commit, error) {
 	return c, nil
 }
 
-func isDuplicate(err error) bool {
+// isDuplicateOfKey reports whether err is a MySQL 1062 (ER_DUP_ENTRY) on the
+// named index. MySQL formats the key as 'uq_commit_id' or 'commits.uq_commit_id'
+// depending on version, so a substring match covers both.
+func isDuplicateOfKey(err error, key string) bool {
 	var me *mysql.MySQLError
-	return errors.As(err, &me) && me.Number == 1062 // ER_DUP_ENTRY
+	return errors.As(err, &me) && me.Number == 1062 && strings.Contains(me.Message, key)
+}
+
+// isDeadlock reports whether err is a MySQL 1213 (ER_LOCK_DEADLOCK).
+func isDeadlock(err error) bool {
+	var me *mysql.MySQLError
+	return errors.As(err, &me) && me.Number == 1213
 }
 
 // maxVarcharLen is the VARCHAR(255) width of doc_id and idempotency_key (see

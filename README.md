@@ -11,7 +11,12 @@ carry their own driver dependency in their own `go.mod`.
 
 > Source-agnostic: a `Change` can come from anywhere — REST/CRUD handlers, a
 > message consumer, a diff of two states. The library never assumes how changes
-> are produced; you `Append` them and `Commit`.
+> are produced; you `Append` them and `Commit`. That includes **collaboratively
+> edited documents**: chronicle implements no CRDT, but because `Changes` is an
+> ordered list of operations rather than a snapshot, replaying it converges
+> last-write-wins while every actor's operation — including the ones that lost —
+> stays on the record. See
+> [where changes come from](https://zdirnecamlcs96.github.io/chronicle/documentation/kit/#where-changes-come-from).
 
 **Mental model:** it's intentionally git-shaped — stage edits, seal them into a
 content-addressed commit hash-chained to its parent, per-document branches. See
@@ -51,13 +56,13 @@ flowchart TB
 
     subgraph L3["adapters/ — OPTIONAL, pick one (or write your own Log)"]
         MEM["adapters/memory<br/>in-memory · dev/ref"]
-        SQL["adapters/sql<br/>MySQL · transactional · fork-free"]
+        SQL["adapters/sql<br/>MySQL · transactional"]
         CH["adapters/clickhouse<br/>columnar · eventual"]
     end
 
     DBA[("MySQL")]
     DBB[("ClickHouse")]
-    CONF["core/conformance<br/>RunLogConformance · RunSerializableAppend · RunDeduperConformance · RunTailReaderConformance · RunSnapshotterConformance"]
+    CONF["core/conformance<br/>RunLogConformance · RunDeduperConformance · RunTailReaderConformance · RunSnapshotterConformance"]
 
     APP -->|in-process: Recorder| REC
     APP -->|in-process: facade| SVC
@@ -73,9 +78,10 @@ flowchart TB
 
 **Read it as:** something produces `Change`s (your CRUD handlers, a message
 consumer, a state diff) → a `Recorder` or the `Service` facade seals them into a
-`Commit` → the `Commit` lands in a `Log` backend. **Exposing this over a wire (an
-HTTP server + a client SDK) is the consumer's job** — chronicle ships no HTTP; you
-write a thin transport over the `Service` facade.
+`Commit` → the `Commit` lands in a `Log` backend. **The core ships no HTTP** — it
+imports nothing beyond the standard library. Exposing this over a wire is a thin
+transport over the `Service` facade, and the optional `kit/httpapi` package ships
+one you can mount directly or read as a worked example.
 
 ## Modules
 
@@ -83,14 +89,19 @@ write a thin transport over the `Service` facade.
 |---|---|---|---|
 | `core` | `…/chronicle/core` | **The core** (package `changelog`): `Log` port, `Recorder`, `Commit`/`Change`, capability interfaces | stdlib |
 | `core/conformance` | `…/chronicle/core/conformance` | Conformance suite every `Log` must pass | stdlib |
-| `kit` | `…/chronicle/kit` | One-stop layer (package `chroniclekit`): `Diff`/`RecordUpdate` sealing, replay reads (`State`/`StateAt`/snapshots), `Explain` read-time display decoration | stdlib |
+| `kit` | `…/chronicle/kit` | One-stop facade (package `chroniclekit`): `RecordUpdate`/`RecordChanges`/`RecordPatch` sealing, delegating reads, JSON Patch interop | stdlib |
+| `kit/schema` | `…/chronicle/kit/schema` | The declared vocabulary (package `chronicleschema`): the `Option`s you set, plus the change kinds. Path grammar and `Apply` are internal machinery, not caller vocabulary | stdlib |
+| `kit/diff` | `…/chronicle/kit/diff` | `Diff` — before/after → `Change`s (package `chroniclediff`) | stdlib |
+| `kit/view` | `…/chronicle/kit/view` | Replay reads (package `chronicleview`): `Reconstruct`, `State`/`StateAt`, snapshots | stdlib |
+| `kit/explain` | `…/chronicle/kit/explain` | `Explain` — read-time display decoration (package `chronicleexplain`) | stdlib |
+| `kit/httpapi` | `…/chronicle/kit/httpapi` | Optional stdlib `http.Handler` over a `Service` | stdlib |
 | `adapters/memory` | `…/chronicle/adapters/memory` | In-memory `Log` — dev / reference (package `changelogmemory`) | stdlib |
-| `adapters/sql` | `…/chronicle/adapters/sql` | Durable **MySQL** adapter — transactional, fork-free | `go-sql-driver/mysql` |
+| `adapters/sql` | `…/chronicle/adapters/sql` | Durable **MySQL** adapter — transactional | `go-sql-driver/mysql` |
 | `adapters/clickhouse` | `…/chronicle/adapters/clickhouse` | Durable **ClickHouse** adapter — columnar, eventual | `clickhouse-go/v2` |
 
 (`…` = `github.com/zdirnecamlcs96`.)
 
-**Talking over a wire** (chronicle ships none of it — a Go server often needs none):
+**Talking over a wire** (the core ships none of it — a Go server often needs none):
 
 - **In-process facade (no wire, no `net/http`):** `changelog.NewService(log)`
   returns a `Service` — seal + reads, plus producer idempotency and cross-document
@@ -103,11 +114,12 @@ write a thin transport over the `Service` facade.
   svc.Seal(ctx, "doc-1", changes, "msg")  // in-process — no handler, no port
   ```
 
-- **Over HTTP / to other languages — you own the transport.** chronicle ships no
-  HTTP server and no client SDK; exposing the facade over a wire is a thin layer
-  you write — an `http.Handler` (routing + JSON) that calls the `Service`, plus a
-  client in your target language that speaks the same routes. The library stays
-  out of your transport, auth, and middleware choices.
+- **Over HTTP / to other languages — you own the transport.** The core ships no
+  HTTP server and there is no client SDK in any language. `kit/httpapi` is an
+  optional stdlib `http.Handler` (routing + JSON) over the `Service` — mount it
+  behind your own auth and middleware, or write your own and speak the same
+  routes from your target language. Either way the library stays out of your
+  transport, auth, and middleware choices.
 
 (For a Go consumer there's no SDK at all — you import `core` directly.)
 
@@ -160,39 +172,62 @@ dedup, and the kit falls back to full-replay reads.
 
 ## Backends
 
-| Backend | Import (dir) | Consistency | `RunLogConformance` | `RunSerializableAppend` |
-|---|---|---|---|---|
-| `changelogmemory.New()` | `adapters/memory` | in-memory (lost on restart) | ✅ | — (can fork) |
-| `changelogsql.Open(...)` | `adapters/sql` | **transactional** (`FOR UPDATE` + unique constraints) | ✅ | ✅ fork-free |
-| `changelogclickhouse.Open(...)` | `adapters/clickhouse` | **eventual** (`ReplacingMergeTree` + `FINAL`) | ✅ | — (no synchronous locks) |
+| Backend | Import (dir) | Consistency | `RunLogConformance` |
+|---|---|---|---|
+| `changelogmemory.New()` | `adapters/memory` | in-memory (lost on restart) | ✅ |
+| `changelogsql.Open(...)` | `adapters/sql` | **transactional** (`FOR UPDATE` serializes seq assignment; unique constraint dedups a re-sent commit) | ✅ |
+| `changelogclickhouse.Open(...)` | `adapters/clickhouse` | **eventual** (`ReplacingMergeTree` + `FINAL`) | ✅ |
 
-The memory adapter is **reference/test only** — never production. Choose
-`adapters/sql` when you need synchronous fork-prevention (one linear chain per
-doc under concurrent writers); `adapters/clickhouse` for cheap columnar retention
-+ analytical queries where producers serialize per-document.
+The memory adapter is **reference/test only** — never production. All three
+record a fork (two commits sharing a parent) as a legal fact, not an error —
+concurrency control across writers is your producer's job, not this library's.
+Choose `adapters/sql` for a synchronous, transactional store per document;
+`adapters/clickhouse` for cheap columnar retention + analytical queries.
 
 ## Quick start (Go)
+
+The short version is below; the walkthrough that grows it into a durable,
+verified changelog is
+**[getting started](https://zdirnecamlcs96.github.io/chronicle/documentation/getting-started/)**,
+and the per-call contract is
+**[reference](https://zdirnecamlcs96.github.io/chronicle/documentation/reference/)**.
+
+Hand it the document before and after an edit; it works out what changed.
 
 ```go
 import (
     "context"
 
-    "github.com/zdirnecamlcs96/chronicle/core" // package changelog
     changelogmemory "github.com/zdirnecamlcs96/chronicle/adapters/memory"
+    chroniclekit "github.com/zdirnecamlcs96/chronicle/kit"
 )
 
 ctx := context.Background()
 log := changelogmemory.New() // dev/test — swap for a durable adapter in prod
+k := chroniclekit.New(log)
 
-rec := changelog.NewRecorder("invoice-42", log)
-rec.Append(changelog.Change{Actor: "alice", Path: "status", Kind: "put", From: "draft", To: "sent"})
-commit, err := rec.Commit(ctx, changelog.WithMessage("send invoice"))
-// commit.ID = SHA256 over length-framed (parent, message, canonical(changes)), chained onto Head
+before := map[string]any{"status": "draft", "total": 1200}
+after := map[string]any{"status": "sent", "total": 1200}
+commit, err := k.RecordUpdate(ctx, "invoice-42", before, after,
+    chroniclekit.WithActor("bob"), chroniclekit.WithMessage("send invoice"))
 
-history, _ := log.Commits(ctx, "invoice-42", 0) // newest-first
+state, _ := k.State(ctx, "invoice-42")                  // replayed, never stored
+history, _ := k.Service().Commits(ctx, "invoice-42", 0) // newest-first
 ```
 
-Durable — same `Recorder`, just a different `Log`:
+Building the changes yourself instead? That is `core` alone — a `Recorder` is
+`git add` then `git commit`:
+
+```go
+import changelog "github.com/zdirnecamlcs96/chronicle/core"
+
+rec := changelog.NewRecorder("invoice-42", log)
+rec.Append(changelog.Change{Actor: "bob", Path: "status", Kind: "put", From: `"draft"`, To: `"sent"`})
+commit, err := rec.Commit(ctx, changelog.WithMessage("send invoice"))
+// commit.ID = SHA256 over length-framed (parent, message, JSON(changes)), chained onto Head
+```
+
+Durable — everything above is unchanged, only the `Log` differs:
 
 ```go
 import changelogsql "github.com/zdirnecamlcs96/chronicle/adapters/sql"
@@ -201,7 +236,7 @@ log, err := changelogsql.Open(ctx,
     "user:pass@tcp(127.0.0.1:3306)/changelog?parseTime=true",
     changelogsql.WithMigrate(true))
 defer log.Close()
-rec := changelog.NewRecorder("invoice-42", log) // durable now
+k := chroniclekit.New(log) // durable now
 ```
 
 ```go
@@ -216,32 +251,37 @@ defer log.Close()
 ## Rendering history for humans (`kit.Explain`)
 
 The stored record is machine-shaped: dotted paths and canonical-JSON scalars
-(`items.0.quantities.1.qty`, `"12" → "14"`). `chroniclekit.Explain` derives
+(`items.0.quantities.1.qty`, `"12" → "14"`). `chronicleexplain.Explain` derives
 everything a UI needs from it at read time by replaying the chain — nothing
 extra is stored, so records written long before any schema was declared render
 exactly like new ones, and changing the options re-renders all existing
 history without touching a stored byte.
 
 ```go
-import chroniclekit "github.com/zdirnecamlcs96/chronicle/kit"
+import (
+    chronicleexplain "github.com/zdirnecamlcs96/chronicle/kit/explain"
+    chronicleschema "github.com/zdirnecamlcs96/chronicle/kit/schema"
+)
 
 // One schema vocabulary, two consumers: Diff/RecordUpdate take the same
 // options on the write side (array identity shapes what is recorded).
-opts := []chroniclekit.DiffOption{
-    chroniclekit.WithArrayKeys(map[string]string{"items": "sku", "items.quantities": "uom"}),
-    chroniclekit.WithIdentityFields("id"),                // identity for arrays not named above;
+opts := []chronicleschema.Option{
+    chronicleschema.WithArrayKeys(map[string]string{"items": "sku", "items.quantities": "uom"}),
+    chronicleschema.WithIdentityFields("id"),             // identity for arrays not named above;
     // no default — the kit guesses no field names, and identity shapes what is RECORDED
-    chroniclekit.WithNameFields("label", "name"),
-    chroniclekit.WithLabels(myI18nResolver),              // optional; Title Case fallback
-    chroniclekit.WithIgnoredFields("updated_at", "meta.rev"),  // folded on read, never dropped:
+    chronicleschema.WithStrictIdentity(),                 // optional: refuse the write instead of
+    // silently pairing an object array by index, which no later option can undo
+    chronicleschema.WithNameFields("label", "name"),
+    chronicleschema.WithLabels(myI18nResolver),           // optional; Title Case fallback
+    chronicleschema.WithIgnoredFields("updated_at", "meta.rev"),  // folded on read, never dropped:
     // a bare name matches at any depth, a schema path only its field + subtree
-    chroniclekit.WithNames(map[string]string{"t1": "Fragile"}), // read-side only: names for ids
+    chronicleschema.WithNames(map[string]string{"t1": "Fragile"}), // read-side only: names for ids
     // whose entities live outside the document; names found in the document win
 }
 
 commits, _ := svc.Commits(ctx, "doc-1", 0)   // newest-first
 slices.Reverse(commits)                      // Explain replays oldest-first
-rows, err := chroniclekit.Explain(commits, opts...)
+rows, err := chronicleexplain.Explain(commits, opts...)
 // rows[i][j] decorates commits[i].Changes[j] 1:1
 ```
 
@@ -269,21 +309,42 @@ in the request, so the server stays schema-blind too.
 
 **The whole flow, start to end** — declaring a schema, recording with it,
 replaying it into rendered rows — is walked through in
-[docs: the kit, end to end](https://zdirnecamlcs96.github.io/chronicle/kit/),
+[docs: the kit, end to end](https://zdirnecamlcs96.github.io/chronicle/documentation/kit/),
 backed by the runnable `Example_explain` in `kit/example_test.go` whose output
 `go test` verifies.
 
 ## Exposing it over a wire
 
-chronicle is Go-only and ships no HTTP server or client SDK — exposing the facade
-is a thin layer you write over `changelog.NewService`. A typical HTTP shape:
+The core ships no HTTP: exposing the facade is a thin layer over
+`changelog.NewService`, and `kit/httpapi` ships one such layer as an optional
+stdlib `http.Handler` you can use directly or read as a worked example. The
+routes it serves:
 
-- `POST /commits` — seal a batch: `{doc_id, changes[], message?, idempotency_key?}`
-- `GET  /commits?doc=&limit=` — a document's commits (or all, omit `doc`)
+- `POST /commits` — seal a batch: `{doc_id, changes[]?, patch[]?, before?, after?, schema?, message?, actor?, idempotency_key?}`.
+  Three write shapes, first present wins: `changes` seals them as given, `patch`
+  is an RFC 6902 op list applied to the stored state and diffed, `after` (with
+  an optional `before`) diffs two documents. `schema` carries the write-side
+  vocabulary — `array_keys`, `identity_fields`, `strict_identity` — and must
+  travel with the write, because identity shapes what is recorded and cannot be
+  declared afterwards. A non-empty `actor` feeds `WithActor`, filling the blank
+  `Change.Actor` on every change the call produces
+- `GET  /commits?doc=&limit=&after=` — a document's commits (or all, omit
+  `doc`). `after=<commit id>` (requires `doc`) returns the tail strictly after
+  it, oldest-first — cursor semantics, deliberately opposite the default
 - `GET  /commits/{id}` — one commit by id
 - `GET  /changes?doc=&limit=` — the flattened change feed
-- `POST /explain` — `{doc, options}` → commits with `Explained` display decoration
-  (see "Rendering history for humans")
+- `GET  /state?doc=&at=` — a document's state at HEAD, or as of commit `at`
+- `GET  /verify?doc=` — verify a document's hash chain: `{ok, commits, head?}`
+  on success, `{ok:false, commits, error}` on a broken chain. Verification
+  failing is a result, not a transport error, so the response is always `200`
+- `POST /explain` — `{doc, limit?, options?}` → commits with `Explained` display
+  decoration (see "Rendering history for humans"). `options` carries the
+  read-side schema vocabulary that survives JSON — `array_keys`,
+  `identity_fields`, `name_fields`, `ignored_fields`, `names`. `WithLabels` has
+  no wire form: it is a Go func, so a client wanting its own i18n translates
+  from each row's `path` and ignores the Title Case `field` fallback. `limit`
+  trims the response only — the replay always starts at the root, or the
+  decoration would be derived from a truncated history.
 
 Each route maps to a `Service` call; the `Service` owns hashing, parent chaining,
 and idempotent dedup (an `idempotency_key` makes at-least-once delivery seal
@@ -310,19 +371,17 @@ func TestMyBackend(t *testing.T) {
     conformance.RunLogConformance(t, func(t *testing.T) (changelog.Log, func()) {
         return newMyLog(t), func() { /* teardown */ }
     })
-    // transactional backends additionally:
-    // conformance.RunSerializableAppend(t, newMyLog)
     // backends implementing Deduper additionally:
     // conformance.RunDeduperConformance(t, newMyLog)
 }
 ```
 
 `RunLogConformance` (mandatory): empty head/commits, append→head, parent
-chaining, newest-first order, limit, per-doc isolation, context cancellation.
-`RunSerializableAppend` (opt-in): concurrent same-doc seals form one linear
-chain — passes only for transactional backends. `RunDeduperConformance` (opt-in):
-for backends implementing `Deduper`, idempotency keys are scoped per document — a
-key marked on one document never resolves on another.
+chaining, newest-first order, limit, per-doc isolation, two commits sharing a
+parent both landing with `Head` as the latest arrival, context cancellation.
+`RunDeduperConformance` (opt-in): for backends implementing `Deduper`,
+idempotency keys are scoped per document — a key marked on one document never
+resolves on another.
 
 ## Writing an adapter
 
@@ -335,8 +394,7 @@ base class — the interface *is* the contract, satisfied structurally):
    simply offers neither for your backend — it keeps no fallback. (`adapters/memory`
    implements both in process; the durable adapters do so across a restart.)
 3. Assert it at compile time: `var _ changelog.Log = (*MyLog)(nil)`.
-4. Prove behavior: pass `conformance.RunLogConformance` (and
-   `RunSerializableAppend` if your backend serializes same-document appends).
+4. Prove behavior: pass `conformance.RunLogConformance` — forks included.
 
 The core never imports your adapter — your adapter imports the core. That's why
 adapters are optional and live as sibling modules.
@@ -356,8 +414,9 @@ Each module is versioned independently with Go subdirectory tags
 
 ```sh
 # go.work spans all modules; the repo root is not itself a module
-go test ./core/... ./adapters/memory/... ./adapters/sql/... ./adapters/clickhouse/...
-go build ./core/... ./adapters/...
+# adapters/ is not itself a module, so each one is named explicitly
+go test  ./core/... ./kit/... ./adapters/memory/... ./adapters/sql/... ./adapters/clickhouse/...
+go build ./core/... ./kit/... ./adapters/memory/... ./adapters/sql/... ./adapters/clickhouse/...
 
 # adapter integration tests (real MySQL + ClickHouse) are build-tagged:
 #   CHANGELOG_SQL_TEST_DSN=… go test -tags integration ./adapters/sql/...
