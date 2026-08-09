@@ -2,4 +2,4 @@ module github.com/zdirnecamlcs96/chronicle/kit
 
 go 1.26.2
 
-require github.com/zdirnecamlcs96/chronicle/core v0.2.0
+require github.com/zdirnecamlcs96/chronicle/core v0.3.0

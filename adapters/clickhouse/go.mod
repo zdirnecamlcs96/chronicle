@@ -4,7 +4,7 @@ go 1.26.2
 
 require (
 	github.com/ClickHouse/clickhouse-go/v2 v2.46.0
-	github.com/zdirnecamlcs96/chronicle/core v0.2.0
+	github.com/zdirnecamlcs96/chronicle/core v0.3.0
 )
 
 require (
