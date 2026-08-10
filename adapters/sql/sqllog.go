@@ -216,11 +216,22 @@ func scanCommit(s scanner) (changelog.Commit, error) {
 }
 
 // isDuplicateOfKey reports whether err is a MySQL 1062 (ER_DUP_ENTRY) on the
-// named index. MySQL formats the key as 'uq_commit_id' or 'commits.uq_commit_id'
-// depending on version, so a substring match covers both.
+// named index. The 1062 message is "Duplicate entry '<value>' for key '<index>'",
+// where <value> is caller data (doc_id leads every key), so the match is anchored
+// to the trailing index clause — a Contains over the whole message would let a
+// doc_id spoof an index name. <index> is 'uq_commit_id' or 'commits.uq_commit_id'
+// depending on MySQL version, so both the bare and table-qualified forms match.
 func isDuplicateOfKey(err error, key string) bool {
 	var me *mysql.MySQLError
-	return errors.As(err, &me) && me.Number == 1062 && strings.Contains(me.Message, key)
+	if !errors.As(err, &me) || me.Number != 1062 {
+		return false
+	}
+	i := strings.LastIndex(me.Message, "for key '")
+	if i < 0 {
+		return false
+	}
+	name := strings.Trim(me.Message[i+len("for key '"):], "'")
+	return name == key || strings.HasSuffix(name, "."+key)
 }
 
 // isDeadlock reports whether err is a MySQL 1213 (ER_LOCK_DEADLOCK).

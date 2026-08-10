@@ -47,6 +47,7 @@ func TestErrorClassifiers(t *testing.T) {
 		{"dup on named key", isDuplicateOfKey(dup("uq_commit_id"), "uq_commit_id"), true},
 		{"dup on table-prefixed key", isDuplicateOfKey(dup("commits.uq_commit_id"), "uq_commit_id"), true},
 		{"dup on other key", isDuplicateOfKey(dup("PRIMARY"), "uq_commit_id"), false},
+		{"value spoofing a key name is not a match", isDuplicateOfKey(&mysql.MySQLError{Number: 1062, Message: "Duplicate entry 'uq_commit_id-1' for key 'PRIMARY'"}, "uq_commit_id"), false},
 		{"deadlock is not dup", isDuplicateOfKey(&mysql.MySQLError{Number: 1213}, "PRIMARY"), false},
 		{"deadlock 1213", isDeadlock(&mysql.MySQLError{Number: 1213}), true},
 		{"dup is not deadlock", isDeadlock(dup("PRIMARY")), false},
