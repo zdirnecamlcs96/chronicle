@@ -164,6 +164,45 @@ Everything else only decorates at read time. Rename a label, add a name field,
 fold a new bookkeeping field — all of history re-renders, and not a stored byte
 moves.
 
+**Value types straddle the split.** A declared value-object shape acts on both
+sides: `Diff` compares and records a matching object as one canonical scalar,
+and `Explain` keeps the same shape a scalar leaf inside container value trees.
+
+```go
+money := chronicleschema.ValueType{
+    Fields: []string{"amount", "currency"}, // key set must match exactly
+    Canon: func(obj map[string]any) (string, bool) {
+        amt, aok := obj["amount"].(string)
+        cur, cok := obj["currency"].(string)
+        if !aok || !cok {
+            return "", false // decline — normal field-wise handling applies
+        }
+        return fmt.Sprintf("%q", amt+" "+cur), true // a JSON scalar — see below
+    },
+}
+opts = append(opts, chronicleschema.WithValueTypes(money))
+```
+
+A whole-container change embedding a money object then renders its tree as
+
+```
+Line                        Line
+  Price = "10.50 USD"         Price
+  Qty = 2                       Amount = "10.50"
+                                Currency = "USD"
+                              Qty = 2
+(with the declaration)      (without it)
+```
+
+Canon's return must be a valid JSON scalar — hence the quoting above. When the
+money object is itself the compared node, that string is recorded verbatim as
+`From`/`To`, and replay parses it like any other stored value; a bare
+`10.50 USD` would seal an unparseable change into history. Declared late, old
+records still hold the raw object — the write side of the bargain is gone —
+but the read side is free: a nested match renders as its canonical leaf, and a
+raw object stored whole as a change's value keeps scalar semantics
+(`FromValue`/`ToValue` nil).
+
 ## 2. Record
 
 `RecordUpdate` diffs `before → after` and seals the result in one call.
