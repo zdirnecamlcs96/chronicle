@@ -1,9 +1,3 @@
----
-# Front matter is required for Jekyll to compile this file.
-# layout: null defeats the site-wide `defaults` layout, which would otherwise
-# wrap this CSS in the doc page template.
-layout: null
----
 
 /* ============================================================
    chronicle — design tokens
