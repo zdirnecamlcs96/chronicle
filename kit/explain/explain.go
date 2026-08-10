@@ -98,10 +98,11 @@ type ValueNode struct {
 // was declared decorate exactly like new ones; nothing is stored.
 //
 // Options declare the caller's schema: WithArrayKeys/WithIdentityFields give
-// array elements identity, WithLabels supplies i18n labels (Title Case
-// fallback), WithNameFields picks the element display-name field, and
-// WithIgnoredFields flags bookkeeping changes (Bookkeeping) for displays to
-// fold away — the stored record always keeps them. Display names come from
+// array elements identity, WithValueTypes keeps declared value-object shapes
+// canonical-scalar leaves inside container values, WithLabels supplies i18n
+// labels (Title Case fallback), WithNameFields picks the element display-name
+// field, and WithIgnoredFields flags bookkeeping changes (Bookkeeping) for
+// displays to fold away — the stored record always keeps them. Display names come from
 // id→name pairs found in either revision surrounding each commit (the after
 // revision wins conflicts), over any WithNames dictionary the caller supplies
 // for ids whose entities live outside the document.
@@ -210,6 +211,11 @@ func containerValue(cfg *chronicleschema.Config, schema []string, raw string, na
 	if !docmodel.IsContainer(v) {
 		return nil
 	}
+	// A declared value-object stored raw (recorded before its ValueType was
+	// declared) keeps scalar semantics: no tree, same contract as scalar From/To.
+	if _, ok := cfg.Canon(v); ok {
+		return nil
+	}
 	label := ""
 	if obj, isObj := v.(map[string]any); isObj {
 		label = nameField(cfg, obj)
@@ -232,6 +238,13 @@ func valueNode(cfg *chronicleschema.Config, schema []string, label string, v any
 	n := ValueNode{Label: label}
 	switch t := v.(type) {
 	case map[string]any:
+		// A declared value-object is a leaf carrying its canonical scalar —
+		// the same form the diff side records — not a subtree of encoding fields.
+		if s, ok := cfg.Canon(t); ok {
+			n.Value = s
+			n.Display = names[n.Value] // "" unless the leaf is a known id
+			return n
+		}
 		keys := make([]string, 0, len(t))
 		for k := range t {
 			keys = append(keys, k)

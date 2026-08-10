@@ -145,7 +145,7 @@ The options split into two groups, and the split matters more than it looks:
 
 | | Write side (`Diff`, `RecordUpdate`) | Read side (`Explain`, `State`) |
 |---|---|---|
-| Options | `WithArrayKeys`, `WithIdentityFields`, `WithStrictIdentity`, `WithValueTypes` | the first two, plus `WithLabels`, `WithNameFields`, `WithNames`, `WithIgnoredFields` |
+| Options | `WithArrayKeys`, `WithIdentityFields`, `WithStrictIdentity`, `WithValueTypes` | all but `WithStrictIdentity`, plus `WithLabels`, `WithNameFields`, `WithNames`, `WithIgnoredFields` |
 | Output | `[]Change`, **hash-sealed** into a commit | rows and value trees, **stored nowhere** |
 | Getting it wrong | permanent — the changes are the hash preimage, and no later option re-keys history | free — change the option, all existing history re-renders |
 

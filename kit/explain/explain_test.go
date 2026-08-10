@@ -1,7 +1,9 @@
 package chronicleexplain
 
 import (
+	"fmt"
 	"reflect"
+	"strconv"
 	"testing"
 
 	changelog "github.com/zdirnecamlcs96/chronicle/core"
@@ -536,3 +538,129 @@ func el(id string, qty int) map[string]any {
 }
 
 var linesKey = chronicleschema.WithArrayKeys(map[string]string{"lines": "product.id"})
+
+// moneyVT is the {amount, currency} value type the diff tests exercise; Canon
+// declines when amount is not a numeric string.
+func moneyVT() chronicleschema.ValueType {
+	return chronicleschema.ValueType{
+		Fields: []string{"amount", "currency"},
+		Canon: func(obj map[string]any) (string, bool) {
+			amt, ok := obj["amount"].(string)
+			if !ok {
+				return "", false
+			}
+			cur, ok := obj["currency"].(string)
+			if !ok {
+				return "", false
+			}
+			f, err := strconv.ParseFloat(amt, 64)
+			if err != nil {
+				return "", false
+			}
+			return fmt.Sprintf("%.2f %s", f, cur), true
+		},
+	}
+}
+
+// TestExplain_ValueTypes_NestedLeaf: a value-typed object nested inside a
+// container value is a leaf carrying its canonical scalar — the schema says the
+// shape is a scalar, so the tree must not decompose it field-by-field.
+func TestExplain_ValueTypes_NestedLeaf(t *testing.T) {
+	opts := []chronicleschema.Option{chronicleschema.WithValueTypes(moneyVT())}
+	commits := commitsFor(t, []any{
+		map[string]any{"line": map[string]any{
+			"qty":   2,
+			"price": map[string]any{"amount": "10.50", "currency": "USD"},
+		}},
+	}, opts...)
+	got, err := Explain(commits, opts...)
+	if err != nil {
+		t.Fatalf("explain: %v", err)
+	}
+	row := got[0][0]
+	if row.Path != "line" || row.ToValue == nil {
+		t.Fatalf("line create needs a ToValue tree: %+v", row)
+	}
+	var price, qty *ValueNode
+	for i, k := range row.ToValue.Kids {
+		switch k.Label {
+		case "Price":
+			price = &row.ToValue.Kids[i]
+		case "Qty":
+			qty = &row.ToValue.Kids[i]
+		}
+	}
+	if price == nil || price.Value != "10.50 USD" || price.Kids != nil {
+		t.Fatalf("value-typed node must be a canonical-scalar leaf: %+v", row.ToValue)
+	}
+	if qty == nil || qty.Value != "2" {
+		t.Fatalf("sibling leaf unchanged: %+v", row.ToValue)
+	}
+}
+
+// TestExplain_ValueTypes_RootScalar: a value-typed shape stored raw as the
+// change's whole value (recorded before the type was declared) keeps scalar
+// semantics at read time — no From/To tree, same contract as scalar values.
+func TestExplain_ValueTypes_RootScalar(t *testing.T) {
+	commits := commitsFor(t, []any{ // no schema at write: the raw object is stored
+		map[string]any{"price": map[string]any{"amount": "10.50", "currency": "USD"}},
+	})
+	got, err := Explain(commits, chronicleschema.WithValueTypes(moneyVT()))
+	if err != nil {
+		t.Fatalf("explain: %v", err)
+	}
+	row := got[0][0]
+	if row.Path != "price" || row.ToValue != nil || row.FromValue != nil {
+		t.Fatalf("value-typed root must have nil value trees: %+v", row)
+	}
+}
+
+// TestExplain_ValueTypes_Declined: an object with an extra key never consults
+// Canon (key sets must match exactly), and a matching key set whose Canon
+// declines falls back to normal per-field recursion.
+func TestExplain_ValueTypes_Declined(t *testing.T) {
+	opts := []chronicleschema.Option{chronicleschema.WithValueTypes(moneyVT())}
+	commits := commitsFor(t, []any{
+		map[string]any{"line": map[string]any{
+			"tagged": map[string]any{"amount": "10.50", "currency": "USD", "note": "x"},
+			"badamt": map[string]any{"amount": 12, "currency": "USD"},
+		}},
+	}, opts...)
+	got, err := Explain(commits, opts...)
+	if err != nil {
+		t.Fatalf("explain: %v", err)
+	}
+	row := got[0][0]
+	if row.ToValue == nil {
+		t.Fatalf("line create needs a ToValue tree: %+v", row)
+	}
+	for _, k := range row.ToValue.Kids {
+		if len(k.Kids) == 0 {
+			t.Fatalf("%s must decompose per-field, got %+v", k.Label, k)
+		}
+	}
+}
+
+// TestExplain_ValueTypes_NoSchema: with no value types declared the same
+// commits decompose exactly as before — declaring nothing changes nothing.
+func TestExplain_ValueTypes_NoSchema(t *testing.T) {
+	opts := []chronicleschema.Option{chronicleschema.WithValueTypes(moneyVT())}
+	commits := commitsFor(t, []any{
+		map[string]any{"line": map[string]any{
+			"price": map[string]any{"amount": "10.50", "currency": "USD"},
+		}},
+	}, opts...)
+	got, err := Explain(commits) // no value types at read
+	if err != nil {
+		t.Fatalf("explain: %v", err)
+	}
+	var price *ValueNode
+	for i, k := range got[0][0].ToValue.Kids {
+		if k.Label == "Price" {
+			price = &got[0][0].ToValue.Kids[i]
+		}
+	}
+	if price == nil || len(price.Kids) != 2 {
+		t.Fatalf("undeclared shape must decompose per-field: %+v", got[0][0].ToValue)
+	}
+}

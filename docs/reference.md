@@ -239,7 +239,7 @@ right:
 | `WithArrayKeys(map[string]string)` | **write** + read | Element identity per array, keyed by the array's index-free dotted path (`""` for a root array), mapping to a dot-path into each element. |
 | `WithIdentityFields(fields ...string)` | **write** + read | Generic identity fields tried in order for arrays `WithArrayKeys` does not name. **No default** — the kit guesses no field names. Replaces any earlier call. |
 | `WithStrictIdentity()` | **write** | Makes an array of objects with no usable identity an `ErrNoIdentity` instead of a silent fall back to positional pairing. Off by default; scalar, empty, and keyed arrays pass. |
-| `WithValueTypes(vts ...ValueType)` | **write** | Object shapes compared and recorded as one canonical scalar instead of field-by-field. Replay yields the scalar, not the object. |
+| `WithValueTypes(vts ...ValueType)` | **write** + read | Object shapes compared and recorded as one canonical scalar instead of field-by-field. Replay yields the scalar, not the object; `Explain` keeps the shape a scalar leaf inside container values. |
 | `WithLabels(func([]string) (string, bool))` | read | Resolves a field's label, used verbatim — the kit never translates. `ok == false` falls back to Title Case of the field name. |
 | `WithNameFields(names ...string)` | read | Fields tried in order for an element's display name. **Defaults to `{"name"}`**; calling this replaces the default. |
 | `WithNames(map[string]string)` | read | Seeds id→name pairs for entities stored outside the document. Names found in the replayed document **win**. Never recorded; `Diff` ignores it. Appends to earlier calls. |

@@ -203,7 +203,7 @@ option changes what gets **recorded**.
 
 | | Write side | Read side |
 |---|---|---|
-| Options | `WithArrayKeys`, `WithIdentityFields`, `WithStrictIdentity`, `WithValueTypes` | those first two, plus `WithLabels`, `WithNameFields`, `WithNames`, `WithIgnoredFields` |
+| Options | `WithArrayKeys`, `WithIdentityFields`, `WithStrictIdentity`, `WithValueTypes` | all but `WithStrictIdentity`, plus `WithLabels`, `WithNameFields`, `WithNames`, `WithIgnoredFields` |
 | Output | `[]Change`, hash-sealed into a commit | rows and value trees, stored nowhere |
 | Getting it wrong | **permanent** — no later option re-keys sealed history | free — change it, all history re-renders |
 

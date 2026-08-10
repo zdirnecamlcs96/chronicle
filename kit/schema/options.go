@@ -11,8 +11,8 @@ import (
 // value types, and how field names resolve to human labels. One vocabulary, two
 // consumers — chroniclediff.Diff uses the write-shaping options (array keys,
 // identity fields, value types); chronicleexplain.Explain uses the
-// read-decoration options (array keys, identity fields, labels, name fields,
-// names, ignored fields). The kit hardcodes no domain content.
+// read-decoration options (array keys, identity fields, value types, labels,
+// name fields, names, ignored fields). The kit hardcodes no domain content.
 type Option func(*Config)
 
 // Config is a resolved set of Options. Build one with New — the zero Config is
@@ -105,7 +105,9 @@ func WithIgnoredFields(entries ...string) Option {
 	}
 }
 
-// WithValueTypes declares value-object shapes to compare canonically.
+// WithValueTypes declares value-object shapes to compare canonically. Diff
+// records a declared shape as its canonical scalar; Explain keeps the shape a
+// scalar leaf when it appears inside a container value.
 func WithValueTypes(vts ...ValueType) Option {
 	return func(c *Config) { c.valueTypes = append(c.valueTypes, vts...) }
 }

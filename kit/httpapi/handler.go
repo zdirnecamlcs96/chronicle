@@ -398,7 +398,7 @@ func getVerify(svc changelog.Service, w http.ResponseWriter, r *http.Request) {
 // survives a JSON boundary. WithLabels is deliberately absent: it is a Go func,
 // and a client that wants its own labels translates from each row's Path (the
 // raw dotted path, which every row carries) instead of the Title Case default.
-// WithValueTypes is absent because it only shapes writes; Explain never reads it.
+// WithValueTypes is absent for the same reason: ValueType.Canon is a Go func.
 type explainRequest struct {
 	Doc     string         `json:"doc"`
 	Limit   int            `json:"limit"`
