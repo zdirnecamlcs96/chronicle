@@ -8,6 +8,36 @@ Modules are versioned in lockstep. A single version covers every module and is
 published as per-module Go tags: `core/vX.Y.Z`, `adapters/memory/vX.Y.Z`,
 `adapters/sql/vX.Y.Z`, `adapters/clickhouse/vX.Y.Z`, and `kit/vX.Y.Z`.
 
+## [0.3.1] - 2026-08-11
+
+Kit-only release: `kit/v0.3.1` is the sole tag. Core and the adapters are
+unchanged and stay at 0.3.0; the kit continues to require `core v0.3.0`.
+
+### Added
+- **`kit`**: `WithCaptureBaseline(message, actor)` RecordOption — onboards a
+  document that existed before recording began. When the delta is non-empty,
+  `before` is non-nil, and the document has no commits yet, `RecordUpdate`
+  first seals `Diff(nil, before)` as a baseline root commit (under the same
+  diff options, so keyed arrays record the element identity the delta uses),
+  then the caller's delta parented to it. The returned commit is always the
+  delta. The two seals are not atomic; a baseline-only chain heals on the next
+  write, and a deduped retry never seals a second baseline. Without the option
+  behavior is unchanged: the chain roots at the first delta, and
+  reconstruction only ever covers fields touched since capture began —
+  docs/kit.md shows both the onboarding call and the late-capture healing
+  pattern for chains already recorded without a baseline.
+- **`kit`**: `Explain` honors `WithValueTypes` inside container values: Canon
+  decides before recursion, so a nested value-object renders as its canonical
+  scalar leaf instead of decomposing field-by-field, and a raw-stored root
+  keeps scalar semantics. Read-time only — stored records are unchanged.
+
+### Fixed
+- **`kit`**: `Diff` validates that a `ValueType` Canon returns a JSON scalar
+  and refuses with `chroniclediff.ErrBadCanon` otherwise — a non-JSON return
+  was sealed verbatim into `From`/`To` and made the history unparseable by
+  `Explain` and `State`. `Explain` treats an invalid return as declined and
+  degrades to the per-field tree, since display must not error.
+
 ## [0.3.0] - 2026-08-09
 
 The identity change and the kit split below are both breaking.
@@ -321,6 +351,7 @@ The identity change and the kit split below are both breaking.
 - Initial release: `chronicle`, a durable, database-agnostic changelog library
   for Go — `core` plus `memory`, `sql`, and `clickhouse` adapters.
 
+[0.3.1]: https://github.com/zdirnecamlcs96/chronicle/releases/tag/kit%2Fv0.3.1
 [0.3.0]: https://github.com/zdirnecamlcs96/chronicle/releases/tag/core%2Fv0.3.0
 [0.2.0]: https://github.com/zdirnecamlcs96/chronicle/releases/tag/core%2Fv0.2.0
 [0.1.2]: https://github.com/zdirnecamlcs96/chronicle/releases/tag/core%2Fv0.1.2
