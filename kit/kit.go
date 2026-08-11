@@ -74,12 +74,15 @@ func (k *Kit) CommitSnapshot(ctx context.Context, docID, commitID string) (any, 
 }
 
 type recordConfig struct {
-	message        string
-	actor          string
-	idempotencyKey string
-	diffOpts       []chronicleschema.Option
-	parent         string
-	hasParent      bool
+	message         string
+	actor           string
+	idempotencyKey  string
+	diffOpts        []chronicleschema.Option
+	parent          string
+	hasParent       bool
+	baseline        bool
+	baselineMessage string
+	baselineActor   string
 }
 
 // RecordOption configures a single Record call.
@@ -120,9 +123,35 @@ func WithDiffOptions(opts ...chronicleschema.Option) RecordOption {
 	return func(c *recordConfig) { c.diffOpts = append(c.diffOpts, opts...) }
 }
 
+// WithCaptureBaseline onboards a document that existed before recording began:
+// when the delta is non-empty, before is non-nil, and the document has no
+// commits yet, RecordUpdate first seals Diff(nil, before) — under the same
+// diff options, so keyed arrays record with the element identity the delta
+// uses — as a baseline root commit with the given message and actor, then
+// seals the caller's delta parented to it. The returned commit is always the
+// delta. A baseline diff yielding nothing (empty-object before) is skipped
+// silently. Outside that case the call behaves exactly as without the option;
+// RecordChanges and RecordPatch ignore it.
+//
+// The two seals are not atomic: a crash in between leaves a baseline-only
+// chain, which heals — the next write sees the head and seals just its delta.
+// The head check and double seal inherit whatever per-document serialization
+// the caller already provides for RecordUpdate; concurrent writers fork
+// exactly as they do today. WithIdempotencyKey covers only the caller's delta;
+// a deduped retry never seals a second baseline (the head check covers it).
+// When the baseline fires it overrides WithParent — the delta's parent IS the
+// baseline, by construction (the same last-wins override RecordPatch uses).
+func WithCaptureBaseline(message, actor string) RecordOption {
+	return func(c *recordConfig) {
+		c.baseline, c.baselineMessage, c.baselineActor = true, message, actor
+	}
+}
+
 // RecordUpdate diffs before→after and seals the resulting Changes as one commit.
 // If nothing changed it returns changelog.ErrEmptyChanges (reusing core's
-// sentinel — there is nothing to commit).
+// sentinel — there is nothing to commit). WithCaptureBaseline additionally
+// seals a baseline root first when onboarding a document that pre-dates its
+// chain — see the option for the exact conditions.
 func (k *Kit) RecordUpdate(ctx context.Context, docID string, before, after any, opts ...RecordOption) (changelog.Commit, error) {
 	var cfg recordConfig
 	for _, o := range opts {
@@ -132,7 +161,47 @@ func (k *Kit) RecordUpdate(ctx context.Context, docID string, before, after any,
 	if err != nil {
 		return changelog.Commit{}, err
 	}
+	// An empty delta falls through to Seal's ErrEmptyChanges below — a no-op
+	// write must not onboard a document, so the baseline is gated on it too.
+	if cfg.baseline && len(changes) > 0 && before != nil {
+		baseID, err := k.sealBaseline(ctx, docID, before, &cfg)
+		if err != nil {
+			return changelog.Commit{}, err
+		}
+		if baseID != "" {
+			// Appended last so it wins over any caller-supplied WithParent: the
+			// delta was diffed against the state the baseline just sealed.
+			opts = append(opts, WithParent(baseID))
+		}
+	}
 	return k.RecordChanges(ctx, docID, changes, opts...)
+}
+
+// sealBaseline seals Diff(nil, before) as a root commit for a document with no
+// chain yet, returning its ID — "" when no baseline applies (the document
+// already has a head, or the baseline diff is empty). The baseline carries the
+// option's message and actor and never the caller's idempotency key.
+func (k *Kit) sealBaseline(ctx context.Context, docID string, before any, cfg *recordConfig) (string, error) {
+	head, err := k.svc.Commits(ctx, docID, 1)
+	if err != nil {
+		return "", err
+	}
+	if len(head) > 0 {
+		return "", nil
+	}
+	base, err := chroniclediff.Diff(nil, before, cfg.diffOpts...)
+	if err != nil {
+		return "", err
+	}
+	if len(base) == 0 {
+		return "", nil // empty-object before: nothing to capture
+	}
+	c, err := k.RecordChanges(ctx, docID, base,
+		WithMessage(cfg.baselineMessage), WithActor(cfg.baselineActor))
+	if err != nil {
+		return "", err
+	}
+	return c.ID, nil
 }
 
 // RecordPatch applies a JSON Patch to docID's state at HEAD and seals the

@@ -208,6 +208,13 @@ raw object stored whole as a change's value keeps scalar semantics
 
 `RecordUpdate` diffs `before → after` and seals the result in one call.
 
+A document that existed before recording began can be onboarded in the same
+call: `WithCaptureBaseline(message, actor)` first seals the full `before` as a
+baseline root commit (only when the document has no commits yet), then the
+delta parented to it. Without it the chain roots at the first delta, and
+`State`/replay can only ever reconstruct the fields touched since capture
+began.
+
 ```go
 v1 := map[string]any{
     "status": "open",
