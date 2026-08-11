@@ -213,7 +213,30 @@ call: `WithCaptureBaseline(message, actor)` first seals the full `before` as a
 baseline root commit (only when the document has no commits yet), then the
 delta parented to it. Without it the chain roots at the first delta, and
 `State`/replay can only ever reconstruct the fields touched since capture
-began.
+began — every commit stays true and verifiable, but a field never edited
+appears in no reconstruction, current state included.
+
+```go
+// Safe to pass on every call: the baseline seals once, on the first write
+// that finds an empty chain and a non-nil before. After that it is a no-op.
+k.RecordUpdate(ctx, "order-7", existing, edited,
+    WithCaptureBaseline("import pre-existing document", "importer"),
+    WithActor("alice"))
+```
+
+A chain already recorded without a baseline heals forward, never by rewrite:
+diff the partial reconstruction against the real document and seal that as an
+ordinary commit at HEAD. Reconstruction is complete from this anchor on;
+history before it stays partial — that data was never captured, and no design
+can recover what was not recorded.
+
+```go
+// Late capture: the missing fields land as creates, parented to the current
+// head. Append-only; nothing detaches, nothing is rewritten.
+partial, _ := k.State(ctx, "order-7")
+k.RecordUpdate(ctx, "order-7", partial, fullDoc,
+    WithMessage("late capture"), WithActor("importer"))
+```
 
 ```go
 v1 := map[string]any{
