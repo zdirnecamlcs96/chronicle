@@ -23,6 +23,12 @@ import (
 // positional fall back.
 var ErrNoIdentity = errors.New("chroniclediff: array of objects has no usable element identity")
 
+// ErrBadCanon is returned when a ValueType.Canon accepts an object but returns
+// something that is not a JSON scalar. Sealing such a value would make the
+// history unparseable on replay, and an invalid return is always a caller bug,
+// so the diff refuses unconditionally.
+var ErrBadCanon = errors.New("chroniclediff: value type Canon must return a JSON scalar")
+
 // Diff compares two states and returns the Changes that turn before into after.
 // Both are JSON-normalized first (marshal then unmarshal into any), so structs
 // (honouring json tags) and maps diff uniformly. From/To hold the canonical-JSON
@@ -42,7 +48,8 @@ var ErrNoIdentity = errors.New("chroniclediff: array of objects has no usable el
 // positional arrays where order is meaningful data.
 //
 // WithValueTypes records declared value-object shapes as their canonical
-// scalar (replay yields the scalar, not the object). Bookkeeping fields are a
+// scalar (replay yields the scalar, not the object); a Canon returning
+// anything but a JSON scalar is an ErrBadCanon. Bookkeeping fields are a
 // read-side concern: Diff records every field — the changelog is the data
 // record — and WithIgnoredFields only flags their changes on Explain. With no
 // options, arrays without a usable identity and all other values diff exactly
@@ -77,7 +84,7 @@ func Diff(before, after any, opts ...chronicleschema.Option) ([]changelog.Change
 // differ carries the caller-declared schema through the walk.
 type differ struct {
 	cfg chronicleschema.Config
-	err error // first strict-mode violation; the walk itself cannot fail
+	err error // first strict-mode or canon violation; the walk itself cannot fail
 }
 
 func coerceRoot(before, after any) (any, any) {
@@ -105,13 +112,13 @@ func (d *differ) value(path, schema []string, before, after any, out *[]changelo
 	// A declared value-object on either side compares canonically as one leaf:
 	// different encodings of the same value are not changes, and a real change
 	// records the canonical form, not the object.
-	if bc, bVT := d.cfg.Canon(before); bVT {
+	if bc, bVT := d.canon(before); bVT {
 		if ac := d.encode(after); bc != ac {
 			*out = append(*out, changelog.Change{Path: docmodel.JoinPath(path), Kind: chronicleschema.KindPut, From: bc, To: ac})
 		}
 		return
 	}
-	if ac, aVT := d.cfg.Canon(after); aVT {
+	if ac, aVT := d.canon(after); aVT {
 		if bc := docmodel.CanonJSON(before); bc != ac {
 			*out = append(*out, changelog.Change{Path: docmodel.JoinPath(path), Kind: chronicleschema.KindPut, From: bc, To: ac})
 		}
@@ -251,10 +258,20 @@ func (d *differ) keyedArray(path, schema, keyPath []string, before, after []any,
 	}
 }
 
+// canon is Config.Canon with the return validated: an accepted object whose
+// canonical form is not a JSON scalar refuses the diff (ErrBadCanon).
+func (d *differ) canon(v any) (string, bool) {
+	s, ok := d.cfg.Canon(v)
+	if ok && !docmodel.IsJSONScalar(s) && d.err == nil {
+		d.err = fmt.Errorf("%w: %q", ErrBadCanon, s)
+	}
+	return s, ok
+}
+
 // encode is canonical JSON with value-type awareness: declared shapes encode as
 // their canonical scalar.
 func (d *differ) encode(v any) string {
-	if s, ok := d.cfg.Canon(v); ok {
+	if s, ok := d.canon(v); ok {
 		return s
 	}
 	return docmodel.CanonJSON(v)

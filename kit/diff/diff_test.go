@@ -193,7 +193,7 @@ func TestDiff_ValueTypes_Money(t *testing.T) {
 			if err != nil {
 				return "", false
 			}
-			return fmt.Sprintf("%.2f %s", f, cur), true
+			return fmt.Sprintf("%q", fmt.Sprintf("%.2f %s", f, cur)), true // a JSON string scalar
 		},
 	}
 	opt := chronicleschema.WithValueTypes(money)
@@ -216,8 +216,30 @@ func TestDiff_ValueTypes_Money(t *testing.T) {
 		t.Fatal(err)
 	}
 	c, ok := changeByPath(cs, "price")
-	if !ok || c.Kind != chronicleschema.KindPut || c.From != "10.50 USD" || c.To != "20.00 USD" {
-		t.Fatalf("want put price From=10.50 USD To=20.00 USD, got %v", cs)
+	if !ok || c.Kind != chronicleschema.KindPut || c.From != `"10.50 USD"` || c.To != `"20.00 USD"` {
+		t.Fatalf("want put price From=\"10.50 USD\" To=\"20.00 USD\", got %v", cs)
+	}
+}
+
+// TestDiff_ValueTypes_BadCanon: a Canon returning anything but a JSON scalar
+// refuses the whole diff — sealing it would make the history unparseable on
+// replay, and an invalid return is always a caller bug, never a choice.
+func TestDiff_ValueTypes_BadCanon(t *testing.T) {
+	bare := chronicleschema.ValueType{
+		Fields: []string{"amount", "currency"},
+		Canon:  func(obj map[string]any) (string, bool) { return "10.50 USD", true }, // not JSON
+	}
+	opt := chronicleschema.WithValueTypes(bare)
+	price := map[string]any{"amount": "10.50", "currency": "USD"}
+
+	// Create path (encode).
+	if _, err := Diff(nil, map[string]any{"price": price}, opt); !errors.Is(err, ErrBadCanon) {
+		t.Fatalf("create: err = %v, want ErrBadCanon", err)
+	}
+	// Compared-node put path.
+	changed := map[string]any{"amount": "20.00", "currency": "USD"}
+	if _, err := Diff(map[string]any{"price": price}, map[string]any{"price": changed}, opt); !errors.Is(err, ErrBadCanon) {
+		t.Fatalf("put: err = %v, want ErrBadCanon", err)
 	}
 }
 

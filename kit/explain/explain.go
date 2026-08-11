@@ -213,7 +213,8 @@ func containerValue(cfg *chronicleschema.Config, schema []string, raw string, na
 	}
 	// A declared value-object stored raw (recorded before its ValueType was
 	// declared) keeps scalar semantics: no tree, same contract as scalar From/To.
-	if _, ok := cfg.Canon(v); ok {
+	// A Canon returning a non-scalar is declined — display degrades, never errors.
+	if s, ok := cfg.Canon(v); ok && docmodel.IsJSONScalar(s) {
 		return nil
 	}
 	label := ""
@@ -240,7 +241,8 @@ func valueNode(cfg *chronicleschema.Config, schema []string, label string, v any
 	case map[string]any:
 		// A declared value-object is a leaf carrying its canonical scalar —
 		// the same form the diff side records — not a subtree of encoding fields.
-		if s, ok := cfg.Canon(t); ok {
+		// A Canon returning a non-scalar is declined — display degrades, never errors.
+		if s, ok := cfg.Canon(t); ok && docmodel.IsJSONScalar(s) {
 			n.Value = s
 			n.Display = names[n.Value] // "" unless the leaf is a known id
 			return n

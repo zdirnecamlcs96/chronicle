@@ -197,7 +197,8 @@ Line                        Line
 Canon's return must be a valid JSON scalar — hence the quoting above. When the
 money object is itself the compared node, that string is recorded verbatim as
 `From`/`To`, and replay parses it like any other stored value; a bare
-`10.50 USD` would seal an unparseable change into history. Declared late, old
+`10.50 USD` would seal an unparseable change into history, so `Diff` refuses
+it with `chroniclediff.ErrBadCanon` (`Explain` just declines it). Declared late, old
 records still hold the raw object — the write side of the bargain is gone —
 but the read side is free: a nested match renders as its canonical leaf, and a
 raw object stored whole as a change's value keeps scalar semantics

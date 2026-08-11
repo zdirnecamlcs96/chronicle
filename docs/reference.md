@@ -239,7 +239,7 @@ right:
 | `WithArrayKeys(map[string]string)` | **write** + read | Element identity per array, keyed by the array's index-free dotted path (`""` for a root array), mapping to a dot-path into each element. |
 | `WithIdentityFields(fields ...string)` | **write** + read | Generic identity fields tried in order for arrays `WithArrayKeys` does not name. **No default** — the kit guesses no field names. Replaces any earlier call. |
 | `WithStrictIdentity()` | **write** | Makes an array of objects with no usable identity an `ErrNoIdentity` instead of a silent fall back to positional pairing. Off by default; scalar, empty, and keyed arrays pass. |
-| `WithValueTypes(vts ...ValueType)` | **write** + read | Object shapes compared and recorded as one canonical scalar instead of field-by-field. Replay yields the scalar, not the object; `Explain` keeps the shape a scalar leaf inside container values. |
+| `WithValueTypes(vts ...ValueType)` | **write** + read | Object shapes compared and recorded as one canonical scalar instead of field-by-field. Replay yields the scalar, not the object; `Explain` keeps the shape a scalar leaf inside container values. `Canon` must return a JSON scalar — anything else is an `ErrBadCanon`. |
 | `WithLabels(func([]string) (string, bool))` | read | Resolves a field's label, used verbatim — the kit never translates. `ok == false` falls back to Title Case of the field name. |
 | `WithNameFields(names ...string)` | read | Fields tried in order for an element's display name. **Defaults to `{"name"}`**; calling this replaces the default. |
 | `WithNames(map[string]string)` | read | Seeds id→name pairs for entities stored outside the document. Names found in the replayed document **win**. Never recorded; `Diff` ignores it. Appends to earlier calls. |
@@ -386,6 +386,7 @@ on, are in [part two](#chain-verification-on-fetched-commits).
 | `ErrEmptyChanges` | `Service.Seal`, and so `Kit.RecordChanges` / `Kit.RecordUpdate` | no changes supplied, or the diff produced none |
 | `ErrNoSuchCommit` | `TailReader.CommitsAfter` | `afterID` is not on the document |
 | `chroniclediff.ErrNoIdentity` | `Diff`, under `WithStrictIdentity` | an array of objects has no usable element identity and would pair positionally |
+| `chroniclediff.ErrBadCanon` | `Diff`, when a `ValueType` matches | `Canon` returned something that is not a JSON scalar — sealing it would make the history unparseable on replay |
 | `chroniclekit.ErrUnsupportedOp` | `Kit.RecordPatch` | the patch carries an op outside `add`/`replace`/`remove` |
 | `ErrHashMismatch` | the verify family | a commit's content no longer hashes to its id |
 | `ErrMissingParent` | the verify family | a commit's parent names a commit that is not in the history — forks and multiple roots are legal, an absent parent is not |

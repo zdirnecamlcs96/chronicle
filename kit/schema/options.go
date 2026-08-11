@@ -150,7 +150,10 @@ func canonID(id string) string {
 // encoding). An object whose key set exactly matches Fields is compared and
 // recorded via Canon's canonical JSON scalar instead of being diffed
 // field-by-field, so different encodings of the same value are not changes.
-// Canon returning false declines the object (normal diff applies).
+// Canon returning false declines the object (normal diff applies). Canon must
+// return a JSON scalar — it is stored verbatim and replay parses it: Diff
+// refuses anything else (chroniclediff.ErrBadCanon), Explain treats it as
+// declined.
 type ValueType struct {
 	Fields []string
 	Canon  func(obj map[string]any) (string, bool)

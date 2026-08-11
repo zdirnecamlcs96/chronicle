@@ -557,7 +557,7 @@ func moneyVT() chronicleschema.ValueType {
 			if err != nil {
 				return "", false
 			}
-			return fmt.Sprintf("%.2f %s", f, cur), true
+			return fmt.Sprintf("%q", fmt.Sprintf("%.2f %s", f, cur)), true // a JSON string scalar
 		},
 	}
 }
@@ -590,7 +590,7 @@ func TestExplain_ValueTypes_NestedLeaf(t *testing.T) {
 			qty = &row.ToValue.Kids[i]
 		}
 	}
-	if price == nil || price.Value != "10.50 USD" || price.Kids != nil {
+	if price == nil || price.Value != `"10.50 USD"` || price.Kids != nil {
 		t.Fatalf("value-typed node must be a canonical-scalar leaf: %+v", row.ToValue)
 	}
 	if qty == nil || qty.Value != "2" {
@@ -637,6 +637,38 @@ func TestExplain_ValueTypes_Declined(t *testing.T) {
 	for _, k := range row.ToValue.Kids {
 		if len(k.Kids) == 0 {
 			t.Fatalf("%s must decompose per-field, got %+v", k.Label, k)
+		}
+	}
+}
+
+// TestExplain_ValueTypes_BadCanonDeclined: a Canon return that is not a JSON
+// scalar is treated as declined at read time — display degrades to the normal
+// per-field tree rather than erroring over derived metadata.
+func TestExplain_ValueTypes_BadCanonDeclined(t *testing.T) {
+	bare := chronicleschema.ValueType{
+		Fields: []string{"amount", "currency"},
+		Canon:  func(obj map[string]any) (string, bool) { return "10.50 USD", true }, // not JSON
+	}
+	commits := commitsFor(t, []any{ // no schema at write: raw objects are stored
+		map[string]any{
+			"line":  map[string]any{"price": map[string]any{"amount": "10.50", "currency": "USD"}},
+			"price": map[string]any{"amount": "10.50", "currency": "USD"},
+		},
+	})
+	got, err := Explain(commits, chronicleschema.WithValueTypes(bare))
+	if err != nil {
+		t.Fatalf("explain: %v", err)
+	}
+	for _, r := range got[0] {
+		switch r.Path {
+		case "line": // nested match must decompose, not become a bogus leaf
+			if len(r.ToValue.Kids[0].Kids) != 2 {
+				t.Fatalf("nested bad canon must decompose per-field: %+v", r.ToValue)
+			}
+		case "price": // root match must keep its tree, not degrade to scalar
+			if r.ToValue == nil || len(r.ToValue.Kids) != 2 {
+				t.Fatalf("root bad canon must keep the per-field tree: %+v", r.ToValue)
+			}
 		}
 	}
 }

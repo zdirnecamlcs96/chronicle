@@ -25,6 +25,12 @@ func CanonJSON(v any) string {
 	return string(b)
 }
 
+// IsJSONScalar reports whether raw is a single valid JSON value that is not a
+// container — the form a chronicleschema ValueType.Canon must return.
+func IsJSONScalar(raw string) bool {
+	return json.Valid([]byte(raw)) && !IsContainer(ParseJSON(raw))
+}
+
 // ParseJSON decodes a Change.From/To value; a malformed encoding yields nil
 // rather than an error, because the read side degrades to no metadata.
 func ParseJSON(s string) any {
