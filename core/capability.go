@@ -68,6 +68,29 @@ type Snapshotter interface {
 	LoadSnapshot(ctx context.Context, docID string) (s Snapshot, ok bool, err error)
 }
 
+// Annotation is an opaque per-commit sidecar, stored OUTSIDE the hash seal.
+// Core never interprets Data; the layer that wrote it (e.g. chroniclekit's
+// readable display projection) does. It is non-authoritative by construction —
+// the sealed chain stays the record — so deleting stored annotations is always
+// safe: a reader falls back to deriving what it can live.
+type Annotation struct {
+	DocID    string
+	CommitID string
+	Data     []byte
+}
+
+// Annotator is an optional capability: at most one annotation per commit,
+// latest write wins.
+type Annotator interface {
+	// SaveAnnotation stores a, replacing any prior annotation for
+	// (a.DocID, a.CommitID).
+	SaveAnnotation(ctx context.Context, a Annotation) error
+	// LoadAnnotations returns docID's annotations for the given commit ids,
+	// keyed by commit id; ids without one are simply absent. Empty ids means an
+	// empty map, never an error.
+	LoadAnnotations(ctx context.Context, docID string, commitIDs []string) (map[string][]byte, error)
+}
+
 // Deduper is an optional capability that makes producer idempotency durable: a
 // delivery retry carrying a previously seen key returns the original commit
 // instead of sealing a duplicate, even across a restart.

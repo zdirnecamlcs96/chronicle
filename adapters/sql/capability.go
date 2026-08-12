@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/zdirnecamlcs96/chronicle/core"
@@ -18,6 +19,7 @@ var (
 	_ changelog.Deduper     = (*Log)(nil)
 	_ changelog.TailReader  = (*Log)(nil)
 	_ changelog.Snapshotter = (*Log)(nil)
+	_ changelog.Annotator   = (*Log)(nil)
 )
 
 // AllCommits returns commits across all documents, newest first.
@@ -190,6 +192,59 @@ func (l *Log) LoadSnapshot(ctx context.Context, docID string) (changelog.Snapsho
 		return changelog.Snapshot{}, false, fmt.Errorf("changelog-sql: load snapshot: %w", err)
 	}
 	return s, true, nil
+}
+
+// SaveAnnotation stores a, replacing any prior annotation for
+// (a.DocID, a.CommitID) (latest write wins via ON DUPLICATE KEY UPDATE against
+// the (doc_id, commit_id) primary key).
+func (l *Log) SaveAnnotation(ctx context.Context, a changelog.Annotation) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := checkLen("doc_id", a.DocID); err != nil {
+		return err
+	}
+	_, err := l.db.ExecContext(ctx,
+		`INSERT INTO annotations (doc_id, commit_id, data, at) VALUES (?, ?, ?, ?)
+		 ON DUPLICATE KEY UPDATE data = VALUES(data), at = VALUES(at)`,
+		a.DocID, a.CommitID, a.Data, time.Now().UTC())
+	if err != nil {
+		return fmt.Errorf("changelog-sql: save annotation: %w", err)
+	}
+	return nil
+}
+
+// LoadAnnotations returns docID's annotations for the given commit ids, keyed
+// by commit id; ids without one are absent.
+func (l *Log) LoadAnnotations(ctx context.Context, docID string, commitIDs []string) (map[string][]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	out := map[string][]byte{}
+	if len(commitIDs) == 0 {
+		return out, nil
+	}
+	q := `SELECT commit_id, data FROM annotations WHERE doc_id = ? AND commit_id IN (?` +
+		strings.Repeat(", ?", len(commitIDs)-1) + `)`
+	args := make([]any, 0, len(commitIDs)+1)
+	args = append(args, docID)
+	for _, id := range commitIDs {
+		args = append(args, id)
+	}
+	rows, err := l.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("changelog-sql: load annotations: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		var data []byte
+		if err := rows.Scan(&id, &data); err != nil {
+			return nil, fmt.Errorf("changelog-sql: load annotations: %w", err)
+		}
+		out[id] = data
+	}
+	return out, rows.Err()
 }
 
 // pruneSeenBatch caps each PruneSeen DELETE so a large backlog doesn't hold a

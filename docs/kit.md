@@ -299,6 +299,30 @@ formatting. Separators, truncation, verbs, colors, and folding belong to your
 renderer: a CLI, a web app, and an email digest can all draw the same rows their
 own way.
 
+## 2½. Freeze names at write time (optional)
+
+Read-time decoration has one blind spot: a `WithNames` id whose entity lives
+outside the document. Delete that entity and the id can never resolve again;
+rename it and every read shows the *latest* name, not the name when the change
+was recorded. If that matters for your references, opt the kit into the
+readable sidecar:
+
+```go
+k := chroniclekit.New(log, chroniclekit.WithReadable())
+
+k.RecordUpdate(ctx, "order-7", before, after,
+    chroniclekit.WithDiffOptions(append(opts,
+        chronicleschema.WithNames(map[string]string{"u1": userName}), // fresh, in hand
+    )...))
+```
+
+Each seal then also stores the commit's display rows — seal-time names
+included — via the backend's optional `Annotator` capability, *outside* the
+hash seal. Best-effort by contract: a sidecar failure never fails the commit
+(a persistent one lands an `{"error": …}` stub so readers can see the gap),
+deleting sidecars is always safe, and history without them — everything
+recorded before you opted in — keeps decorating live.
+
 ## 3. Read the chain
 
 `Commits` is newest-first, like `git log`. `Explain` replays from the root, so
@@ -314,6 +338,35 @@ rows, err := chronicleexplain.Explain(commits, opts...)
 `Explain` replays the chain and derives display metadata from the revisions
 surrounding each commit. Because it is all derived, records written long before
 any schema was declared decorate exactly like new ones.
+
+`Kit.Explain` is the same read in one call — and the reason to prefer it: it
+overlays the name-resolution fields (`Display`, `Element.Name`) from any
+stored readable sidecars, so seal-time names survive their referents.
+
+```go
+commits, rows, err := k.Explain(ctx, "order-7", opts...)
+```
+
+### Three layers, one row
+
+A decorated row is a **per-field overlay** of three layers, not a
+whole-result fallback — every row always carries every layer it has, and a
+higher layer wins only for the fields it actually spoke on:
+
+| Layer | Provides | Drops out when |
+|---|---|---|
+| Readable (frozen at seal) | `Display`, `Element.Name` | no sidecar, error stub, or row misalignment — silently, per commit |
+| Schema (live, per read) | labels, trails, element identity, value trees, bookkeeping, read-time `WithNames` | no options passed — Title Case and raw values remain |
+| Data (sealed) | `Path`, `Kind`, `From`, `To`, actor, time — embedded untouched in every row | never |
+
+There is no "which layer" flag; you choose depth by choosing the surface:
+
+| Surface | Layers |
+|---|---|
+| `Service.Commits` / `GET /commits` | data |
+| `GET /changes` | data + readable — no schema input, no replay; the cheapest human feed |
+| `chronicleexplain.Explain` | data + schema — live only, no sidecar |
+| `Kit.Explain` / `POST /explain` | all three, merged |
 
 ## 4. Render
 
@@ -407,9 +460,12 @@ POST /explain {"doc":"order-7","limit":10,"options":{
 
 The write side travels the same way. `POST /commits` takes a `schema` object
 carrying the write half of the vocabulary — `array_keys`, `identity_fields`,
-`strict_identity` — for the same reason: the producer knows its document's
-shape, the server does not, and the declaration has to arrive with the write
-that depends on it.
+`strict_identity`, `names` — for the same reason: the producer knows its
+document's shape, the server does not, and the declaration has to arrive with
+the write that depends on it. `names` is the readable sidecar's wire form: on
+a server mounted with `httpapi.Handler(svc, chroniclekit.WithReadable())` the
+pairs freeze into the commit's sidecar, and `GET /changes` then serves each
+change's frozen display row as `readable` with no schema input at all.
 
 Two things about it are contract rather than convenience. **`limit` trims the
 response, never the replay** — decoration is derived by replaying from the

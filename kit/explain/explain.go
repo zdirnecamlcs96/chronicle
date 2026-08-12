@@ -5,9 +5,13 @@
 //
 // Everything here is derived at READ time from the replayed revisions, under
 // the schema the caller declares on the call. Nothing display-shaped is ever
-// stored, so records written long before any schema existed decorate exactly
-// like new ones, and changing the schema changes only how history reads —
-// never what it says.
+// stored inside the hash seal, so records written long before any schema
+// existed decorate exactly like new ones, and changing the schema changes only
+// how history reads — never what it says. The one opt-in exception lives
+// outside the seal: chroniclekit.WithReadable() freezes each commit's display
+// rows (Readable) at seal time via the backend's Annotator capability, because
+// read-time resolution cannot recover the name of a referent deleted or
+// renamed since. Commits without a sidecar keep decorating live.
 package chronicleexplain
 
 import (
@@ -116,30 +120,41 @@ func Explain(commits []changelog.Commit, opts ...chronicleschema.Option) ([][]Ex
 	out := make([][]Explained, len(commits))
 	var cur any // nil root so the first change vivifies object or array docs alike
 	for i, c := range commits {
-		names := map[string]string{}
-		maps.Copy(names, cfg.Names()) // WithNames seeds; the document overwrites
-		walkNames(&cfg, cur, nil, names)
-		after, err := docmodel.Normalize(cur) // deep copy
+		rows, next, err := explainStep(&cfg, cur, c.Changes)
 		if err != nil {
 			return nil, err
 		}
-		for _, ch := range c.Changes {
-			if after, err = docmodel.Apply(after, ch); err != nil {
-				return nil, fmt.Errorf("explain %s %q: %w", ch.Kind, ch.Path, err)
-			}
-		}
-		walkNames(&cfg, after, nil, names) // after revision wins conflicts
-
-		rows := make([]Explained, len(c.Changes))
-		for j, ch := range c.Changes {
-			rows[j] = decorate(&cfg, cur, ch, names)
-			if cur, err = docmodel.Apply(cur, ch); err != nil {
-				return nil, fmt.Errorf("explain %s %q: %w", ch.Kind, ch.Path, err)
-			}
-		}
 		out[i] = rows
+		cur = next
 	}
 	return out, nil
+}
+
+// explainStep decorates one commit's changes against cur — the document at the
+// commit's parent — and returns the rows plus the post-commit state.
+func explainStep(cfg *chronicleschema.Config, cur any, changes []changelog.Change) ([]Explained, any, error) {
+	names := map[string]string{}
+	maps.Copy(names, cfg.Names()) // WithNames seeds; the document overwrites
+	walkNames(cfg, cur, nil, names)
+	after, err := docmodel.Normalize(cur) // deep copy
+	if err != nil {
+		return nil, cur, err
+	}
+	for _, ch := range changes {
+		if after, err = docmodel.Apply(after, ch); err != nil {
+			return nil, cur, fmt.Errorf("explain %s %q: %w", ch.Kind, ch.Path, err)
+		}
+	}
+	walkNames(cfg, after, nil, names) // after revision wins conflicts
+
+	rows := make([]Explained, len(changes))
+	for j, ch := range changes {
+		rows[j] = decorate(cfg, cur, ch, names)
+		if cur, err = docmodel.Apply(cur, ch); err != nil {
+			return nil, cur, fmt.Errorf("explain %s %q: %w", ch.Kind, ch.Path, err)
+		}
+	}
+	return rows, cur, nil
 }
 
 // decorate derives one change's display metadata by walking its path through

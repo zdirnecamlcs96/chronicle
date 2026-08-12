@@ -8,6 +8,7 @@ package memlog
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"sync"
 
@@ -22,9 +23,14 @@ type Log struct {
 	commits map[string][]changelog.Commit
 	seen    map[[2]string]changelog.Commit
 	snaps   map[string]changelog.Snapshot
+	anns    map[[2]string][]byte
 
 	commitsCalls int // full-history Commits reads
 	afterCalls   int // cursor CommitsAfter reads
+
+	// FailNextSaveAnnotations makes the next n SaveAnnotation calls fail — for
+	// tests of the write hook's never-fail-the-commit contract.
+	FailNextSaveAnnotations int
 }
 
 // New returns an empty Log.
@@ -33,6 +39,7 @@ func New() *Log {
 		commits: map[string][]changelog.Commit{},
 		seen:    map[[2]string]changelog.Commit{},
 		snaps:   map[string]changelog.Snapshot{},
+		anns:    map[[2]string][]byte{},
 	}
 }
 
@@ -196,6 +203,35 @@ func (m *Log) LoadSnapshot(ctx context.Context, docID string) (changelog.Snapsho
 	}
 	s.State = append([]byte(nil), s.State...)
 	return s, true, nil
+}
+
+func (m *Log) SaveAnnotation(ctx context.Context, a changelog.Annotation) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.FailNextSaveAnnotations > 0 {
+		m.FailNextSaveAnnotations--
+		return errors.New("memlog: save annotation failed")
+	}
+	m.anns[[2]string{a.DocID, a.CommitID}] = append([]byte(nil), a.Data...)
+	return nil
+}
+
+func (m *Log) LoadAnnotations(ctx context.Context, docID string, commitIDs []string) (map[string][]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := map[string][]byte{}
+	for _, id := range commitIDs {
+		if data, ok := m.anns[[2]string{docID, id}]; ok {
+			out[id] = append([]byte(nil), data...)
+		}
+	}
+	return out, nil
 }
 
 // Snapshots returns a copy of the stored snapshots, for tests asserting on what

@@ -158,6 +158,8 @@ func WithDiffOptions(opts ...chronicleschema.Option) RecordOption
 | `RecordPatch` | Applies an RFC 6902 patch to the document's state at HEAD, then diffs and seals — see [sealing patches]({{ u_patches }}). |
 | `State` / `StateAt` | Current state; `StateAt` reconstructs **as of and including** `commitID`. |
 | `CommitSnapshot` | The commit's before-state for the smallest subtree containing every change in it. |
+| `Explain` | The document's full chain (oldest first) plus display-decorated rows per commit, with name-resolution fields (`Display`, `Element.Name`) overlaid from stored readable sidecars where present — stored names win; commits without one decorate live. |
+| `Readables` | The stored readable sidecars (`chronicleexplain.Readable`) for the given commit ids, keyed by id. `nil, nil` on a backend without the `Annotator` capability. |
 | `Service()` | The underlying `Service`, for reads the `Kit` does not wrap. |
 
 | Option | Contract |
@@ -165,11 +167,19 @@ func WithDiffOptions(opts ...chronicleschema.Option) RecordOption
 | `WithMessage(m)` | Annotates the sealed commit. Hashed. |
 | `WithActor(a)` | Fills a **blank** `Change.Actor` on every change being sealed — this is what makes `Commit.Authors` non-empty. An `Actor` already set wins, so a `RecordChanges` call may mix attributions. Applied in `RecordChanges`, so it reaches hand-built changes too. |
 | `WithIdempotencyKey(k)` | Forwarded to `Service.Seal`; a retry with the same key returns the original commit. |
-| `WithDiffOptions(…)` | Forwards `chronicleschema` options to the diff inside `RecordUpdate` / `RecordPatch`. |
+| `WithDiffOptions(…)` | Forwards `chronicleschema` options to the diff inside `RecordUpdate` / `RecordPatch`. Under `WithReadable`, the same options — fresh `WithNames` pairs included — also decorate the commit's readable sidecar at seal time. |
 
-Either constructor detects the backend's `Snapshotter` and `TailReader` once,
-through the `Service`'s `Unwrap()` chain. A `Service` exposing no `Unwrap` gets
-full-replay reads.
+Both constructors additionally take constructor `Option`s. `WithReadable()`
+opts writes into the readable sidecar: each `RecordUpdate`/`RecordPatch` seal
+(baselines included) also stores its display rows via the backend's
+`Annotator`, best-effort — a sidecar failure never fails the commit; a
+persistent one lands an `{"error": …}` stub so readers can see the gap. Direct
+`RecordChanges` seals have no before-state and store nothing. On a backend
+without the capability the option is a silent no-op.
+
+Either constructor detects the backend's `Snapshotter`, `TailReader`, and
+`Annotator` once, through the `Service`'s `Unwrap()` chain. A `Service`
+exposing no `Unwrap` gets full-replay reads.
 
 ### `chroniclediff.Diff`
 
@@ -225,7 +235,7 @@ func Explain(commits []changelog.Commit, opts ...chronicleschema.Option) ([][]Ex
 |---|---|
 | Order | Takes commits **oldest first** — `slices.Reverse` what `Commits` gave you. |
 | Alignment | `rows[i][j]` decorates `commits[i].Changes[j]`, one to one. Each `Explained` embeds the stored `Change` untouched, which is what keeps `path` on every row. |
-| Derivation | Everything is derived at read time by replaying the chain. **Nothing display-related is ever stored**, so pre-schema records render like new ones and changing an option re-renders all history without touching a stored byte. |
+| Derivation | Everything is derived at read time by replaying the chain. **Nothing display-related is ever stored inside the hash seal**, so pre-schema records render like new ones and changing an option re-renders all history without touching a stored byte. The opt-in readable sidecar (`chroniclekit.WithReadable()`) stores frozen seal-time rows *outside* the seal; `Kit.Explain` overlays only their name-resolution fields. |
 | JSON | `Explained`, `Element`, `Display`, `ValueNode` carry snake_case tags with `omitempty`; the embedded `Change` inlines. |
 | Boundary | **The kit emits structure, never formatting** — slices, not joined strings; names, not sentences; canonical scalars, not prettified text; flags, not decisions. Separators, truncation, pluralization, verbs, colours, and folding belong to the consumer. |
 
@@ -242,7 +252,7 @@ right:
 | `WithValueTypes(vts ...ValueType)` | **write** + read | Object shapes compared and recorded as one canonical scalar instead of field-by-field. Replay yields the scalar, not the object; `Explain` keeps the shape a scalar leaf inside container values. `Canon` must return a JSON scalar — anything else is an `ErrBadCanon`. |
 | `WithLabels(func([]string) (string, bool))` | read | Resolves a field's label, used verbatim — the kit never translates. `ok == false` falls back to Title Case of the field name. |
 | `WithNameFields(names ...string)` | read | Fields tried in order for an element's display name. **Defaults to `{"name"}`**; calling this replaces the default. |
-| `WithNames(map[string]string)` | read | Seeds id→name pairs for entities stored outside the document. Names found in the replayed document **win**. Never recorded; `Diff` ignores it. Appends to earlier calls. |
+| `WithNames(map[string]string)` | read (+ write under `WithReadable`) | Seeds id→name pairs for entities stored outside the document. Names found in the replayed document **win**. Never recorded in the sealed changes; `Diff` ignores it. Appends to earlier calls. Passed at **write** time on a `WithReadable` kit, the pairs freeze into the commit's readable sidecar — the only way to keep a referent's name after the referent is deleted or renamed. |
 | `WithIgnoredFields(entries ...string)` | read | Flags bookkeeping fields. A bare name matches at any depth; a dotted path matches that field and its subtree. **Recording is unaffected** — the changelog stays a full data record; `Explain` only marks the change `Bookkeeping` so a display can fold it. Appends to earlier calls. |
 
 Write-side options are load-bearing at record time and cannot be changed
@@ -427,15 +437,19 @@ Optional. The core ships no HTTP; this is one worked transport over a `Service`,
 and you can equally write your own.
 
 ```go
-func Handler(svc changelog.Service) http.Handler
+func Handler(svc changelog.Service, kitOpts ...chroniclekit.Option) http.Handler
 ```
+
+Pass `chroniclekit.WithReadable()` to store write-time readable sidecars for
+commits sealed with `schema.names`; reads (`/changes`, `/explain`) surface
+stored sidecars either way.
 
 | Route | Request | Success |
 |---|---|---|
 | `POST /commits` | `{doc_id, changes[]?, patch[]?, before?, after?, schema?, message?, actor?, idempotency_key?}` | `201` + the `Commit` |
 | `GET /commits?doc=&limit=&after=` | — | `200` + that document's commits, or `[{doc_id, commit}]` across all documents when `doc` is omitted; `after=<commit id>` (requires `doc`) returns the tail strictly after it, oldest-first |
 | `GET /commits/{id}` | — | `200` + `{doc_id, commit}` |
-| `GET /changes?doc=&limit=` | — | `200` + the flattened feed: `{commit_id, doc_id, …change fields}` |
+| `GET /changes?doc=&limit=` | — | `200` + the flattened feed: `{commit_id, doc_id, …change fields}`; a change whose commit has a readable sidecar adds `readable` (its frozen display row) or `readable_error` (the sidecar recorded a failure) |
 | `GET /state?doc=&at=` | — | `200` + the reconstructed document state; `at=<commit id>` reconstructs as of that commit instead of HEAD |
 | `GET /verify?doc=` | — | `200` + `{ok, commits, head?}` on a clean chain, `{ok:false, commits, error}` on a broken one — a failed verification is a result, not a transport error |
 | `POST /explain` | `{doc, limit?, options?}` | `200` + commits newest-first, each `{id, parent, at, authors, message?, changes}` where every change is display-decorated |
@@ -462,8 +476,8 @@ default.
 
 | | `POST /commits` → `schema` | `POST /explain` → `options` |
 |---|---|---|
-| Fields | `array_keys`, `identity_fields`, `strict_identity` | `array_keys`, `identity_fields`, `name_fields`, `ignored_fields`, `names` |
-| Reaches | the diff in `patch` and `before`/`after` writes; ignored by `changes` | `Explain` |
+| Fields | `array_keys`, `identity_fields`, `strict_identity`, `names` | `array_keys`, `identity_fields`, `name_fields`, `ignored_fields`, `names` |
+| Reaches | the diff in `patch` and `before`/`after` writes (ignored by `changes`); `names` reaches only the readable sidecar of a `WithReadable` server | `Explain` |
 | Getting it wrong | **permanent** — identity shapes what is recorded, and no later declaration re-keys it. `strict_identity` turns the omission into a `400` | free — re-request with different options |
 | No wire form | `value_types` (`ValueType.Canon` is a Go func) | `labels` (a Go func; falls back to Title Case) |
 
@@ -554,6 +568,10 @@ type Snapshotter interface {
     SaveSnapshot(ctx context.Context, s Snapshot) error
     LoadSnapshot(ctx context.Context, docID string) (s Snapshot, ok bool, err error)
 }
+type Annotator interface {
+    SaveAnnotation(ctx context.Context, a Annotation) error
+    LoadAnnotations(ctx context.Context, docID string, commitIDs []string) (map[string][]byte, error)
+}
 ```
 
 | Capability | Contract | Absent ⇒ |
@@ -562,8 +580,9 @@ type Snapshotter interface {
 | `Deduper` | `Seen`/`MarkSeen` are scoped **per document**: the same key on a different `docID` is a distinct delivery. `MarkSeen` is first-writer-wins — a no-op when `(docID, key)` exists. | `WithIdempotencyKey` is silently inert; `Seal` stays at-least-once |
 | `TailReader` | Commits strictly **after** `afterID`, **oldest first** (replay order — the opposite of `Commits`). `afterID == ""` means from the root. `limit <= 0` = all. An `afterID` not on the document returns `ErrNoSuchCommit`. | `VerifyAfter` errors; the kit's reader falls back to full replay |
 | `Snapshotter` | One snapshot per document, latest write wins. A **pure cache** — deleting stored snapshots is always safe. | the kit's reader falls back to full replay |
+| `Annotator` | At most one opaque annotation per `(docID, commitID)`, latest write wins, stored **outside** the hash seal; `LoadAnnotations` omits ids without one. Non-authoritative — deleting rows is always safe. | `WithReadable` is silently inert; `Kit.Readables` returns `nil, nil` and every read decorates live |
 
-All three shipped adapters implement all four: `adapters/sql` and
+All three shipped adapters implement all five: `adapters/sql` and
 `adapters/clickhouse` durably across a restart, `adapters/memory` in process
 only.
 
@@ -612,6 +631,7 @@ func RunLogConformance(t *testing.T, newLog NewLog)          // mandatory
 func RunDeduperConformance(t *testing.T, newLog NewLog)      // if you implement Deduper
 func RunTailReaderConformance(t *testing.T, newLog NewLog)   // if you implement TailReader
 func RunSnapshotterConformance(t *testing.T, newLog NewLog)  // if you implement Snapshotter
+func RunAnnotatorConformance(t *testing.T, newLog NewLog)    // if you implement Annotator
 ```
 
 | Suite | Asserts |
@@ -620,6 +640,7 @@ func RunSnapshotterConformance(t *testing.T, newLog NewLog)  // if you implement
 | `RunDeduperConformance` | idempotency keys are scoped per document: a key marked on one document never resolves on another, and resolves to that other document's own commit once marked there |
 | `RunTailReaderConformance` | oldest-first cursor order, `""` from the root, mid-cursor reads, `limit`, empty tail after head, `ErrNoSuchCommit` for an unknown **or foreign** cursor, context cancellation |
 | `RunSnapshotterConformance` | absent snapshot reports `ok == false`, round-trip, latest write wins, per-document isolation, context cancellation |
+| `RunAnnotatorConformance` | absent and empty id sets yield empty maps, round-trip, latest write wins, batch subset resolves exactly the stored ids, per-document isolation, context cancellation |
 
 The package imports only `changelog` and the standard library, so depending on it
 from your `_test.go` adds nothing to your build.

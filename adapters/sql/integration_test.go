@@ -45,6 +45,7 @@ func TestSQLLog_Conformance(t *testing.T) {
 	conformance.RunDeduperConformance(t, newLog)
 	conformance.RunTailReaderConformance(t, newLog)
 	conformance.RunSnapshotterConformance(t, newLog)
+	conformance.RunAnnotatorConformance(t, newLog)
 }
 
 // testDB opens the integration database or skips the test.

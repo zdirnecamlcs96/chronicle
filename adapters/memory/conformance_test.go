@@ -43,6 +43,14 @@ func TestMemoryLog_SnapshotterConformance(t *testing.T) {
 	})
 }
 
+// The memory adapter implements changelog.Annotator (one display sidecar per
+// commit, outside the hash seal, latest wins).
+func TestMemoryLog_AnnotatorConformance(t *testing.T) {
+	conformance.RunAnnotatorConformance(t, func(t *testing.T) (changelog.Log, func()) {
+		return changelogmemory.New(), func() {}
+	})
+}
+
 // The memory adapter implements changelog.Indexer (cross-document queries),
 // moved here from the core service so the service holds no storage state.
 func TestMemoryLog_Indexer(t *testing.T) {

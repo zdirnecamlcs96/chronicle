@@ -111,6 +111,15 @@ index-free schema path matching its field and subtree), and per-field
 `Diff` uses on the write side — so changing labels, name fields, or ignored
 fields re-renders *all* existing history without touching a stored byte.
 
+One opt-in exception, stored *outside* the seal: `chroniclekit.WithReadable()`
+freezes each commit's display rows — including id→name pairs the caller passes
+as `WithNames` at seal time — into a per-commit sidecar via the backend's
+optional `Annotator` capability. It exists because read-time resolution cannot
+recover the name of a referent deleted or renamed since the change was
+recorded. The sealed record stays the authority (the sidecar never enters the
+hash preimage and deleting it is always safe); commits without one — all
+pre-feature history — keep decorating live.
+
 The boundary the API holds: the kit emits structure (slices, names, canonical
 scalars, flags), never formatting —
 [why that line is drawn there]({{ u_design }}#what-is-deliberately-absent).

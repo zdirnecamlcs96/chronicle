@@ -22,12 +22,16 @@ type Log struct {
 	commits map[string][]changelog.Commit
 	seen    map[seenKey]changelog.Commit
 	snaps   map[string]changelog.Snapshot
+	anns    map[annKey][]byte
 }
 
 // seenKey scopes an idempotency key to its document, so a key reused on a
 // different document is a distinct delivery and never replays another
 // document's commit.
 type seenKey struct{ docID, key string }
+
+// annKey scopes an annotation to its (document, commit) pair.
+type annKey struct{ docID, commitID string }
 
 // The port and every optional capability, asserted at compile time — the same
 // check an adapter author is told to write, kept honest on the reference
@@ -38,6 +42,7 @@ var (
 	_ changelog.Deduper     = (*Log)(nil)
 	_ changelog.TailReader  = (*Log)(nil)
 	_ changelog.Snapshotter = (*Log)(nil)
+	_ changelog.Annotator   = (*Log)(nil)
 )
 
 // New returns an empty in-memory Log.
@@ -46,6 +51,7 @@ func New() *Log {
 		commits: map[string][]changelog.Commit{},
 		seen:    map[seenKey]changelog.Commit{},
 		snaps:   map[string]changelog.Snapshot{},
+		anns:    map[annKey][]byte{},
 	}
 }
 
@@ -147,6 +153,36 @@ func (m *Log) LoadSnapshot(ctx context.Context, docID string) (changelog.Snapsho
 	}
 	s.State = append([]byte(nil), s.State...) // hand out a copy
 	return s, true, nil
+}
+
+// SaveAnnotation stores a, replacing any prior annotation for
+// (a.DocID, a.CommitID) (latest wins).
+func (m *Log) SaveAnnotation(ctx context.Context, a changelog.Annotation) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	data := append([]byte(nil), a.Data...) // detach from the caller's buffer
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.anns[annKey{a.DocID, a.CommitID}] = data
+	return nil
+}
+
+// LoadAnnotations returns docID's annotations for the given commit ids, keyed
+// by commit id; ids without one are absent.
+func (m *Log) LoadAnnotations(ctx context.Context, docID string, commitIDs []string) (map[string][]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := map[string][]byte{}
+	for _, id := range commitIDs {
+		if data, ok := m.anns[annKey{docID, id}]; ok {
+			out[id] = append([]byte(nil), data...) // hand out a copy
+		}
+	}
+	return out, nil
 }
 
 // Seen returns the commit (docID, key) previously sealed; keys are scoped per

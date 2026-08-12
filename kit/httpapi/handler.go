@@ -4,6 +4,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log"
@@ -34,16 +35,20 @@ const maxBody = 4 << 20
 //	GET  /state?doc=&at=    a document's state at HEAD, or as of commit at
 //	GET  /verify?doc=    verify a document's hash chain
 //	POST /explain          {doc, limit?, options?} → commits with display decoration
-func Handler(svc changelog.Service) http.Handler {
-	k := chroniclekit.NewWithService(svc)
+//
+// kitOpts configure the Kit behind the writes — pass chroniclekit.WithReadable()
+// to store write-time readable sidecars for commits sealed with schema.names.
+// Reads (/changes, /explain) surface stored sidecars regardless.
+func Handler(svc changelog.Service, kitOpts ...chroniclekit.Option) http.Handler {
+	k := chroniclekit.NewWithService(svc, kitOpts...)
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /commits", func(w http.ResponseWriter, r *http.Request) { postCommits(k, w, r) })
 	mux.HandleFunc("GET /commits/{id}", func(w http.ResponseWriter, r *http.Request) { getCommit(svc, w, r) })
 	mux.HandleFunc("GET /commits", func(w http.ResponseWriter, r *http.Request) { listCommits(svc, w, r) })
-	mux.HandleFunc("GET /changes", func(w http.ResponseWriter, r *http.Request) { listChanges(svc, w, r) })
+	mux.HandleFunc("GET /changes", func(w http.ResponseWriter, r *http.Request) { listChanges(k, w, r) })
 	mux.HandleFunc("GET /state", func(w http.ResponseWriter, r *http.Request) { getState(k, w, r) })
 	mux.HandleFunc("GET /verify", func(w http.ResponseWriter, r *http.Request) { getVerify(svc, w, r) })
-	mux.HandleFunc("POST /explain", func(w http.ResponseWriter, r *http.Request) { postExplain(svc, w, r) })
+	mux.HandleFunc("POST /explain", func(w http.ResponseWriter, r *http.Request) { postExplain(k, w, r) })
 	return mux
 }
 
@@ -66,12 +71,17 @@ type postRequest struct {
 // that survives a JSON boundary, mirroring explainOptions on the read side.
 // Identity shapes what is RECORDED and cannot be re-declared after a commit is
 // sealed, so a producer writing over HTTP must be able to state it in the same
-// request; there is no second chance. WithValueTypes is deliberately absent:
-// ValueType.Canon is a Go func, so that one shape cannot cross a wire at all.
+// request; there is no second chance. Names carries the producer's fresh
+// id→name pairs: the diff ignores them, but a server built with
+// chroniclekit.WithReadable() freezes them into the commit's readable sidecar
+// — the other write-time, no-second-chance declaration. WithValueTypes is
+// deliberately absent: ValueType.Canon is a Go func, so that one shape cannot
+// cross a wire at all.
 type writeOptions struct {
 	ArrayKeys      map[string]string `json:"array_keys"`
 	IdentityFields []string          `json:"identity_fields"`
 	StrictIdentity bool              `json:"strict_identity"`
+	Names          map[string]string `json:"names"`
 }
 
 func (o writeOptions) schemaOptions() []chronicleschema.Option {
@@ -84,6 +94,9 @@ func (o writeOptions) schemaOptions() []chronicleschema.Option {
 	}
 	if o.StrictIdentity {
 		opts = append(opts, chronicleschema.WithStrictIdentity())
+	}
+	if len(o.Names) > 0 {
+		opts = append(opts, chronicleschema.WithNames(o.Names))
 	}
 	return opts
 }
@@ -294,9 +307,15 @@ type changeRow struct {
 	CommitID string `json:"commit_id"`
 	DocID    string `json:"doc_id,omitempty"`
 	changelog.Change
+	// Readable is the change's stored write-time display row (seal-time names,
+	// no schema input needed); ReadableError surfaces a commit whose sidecar
+	// recorded a failure instead. Both absent when no sidecar exists.
+	Readable      *chronicleexplain.ReadableRow `json:"readable,omitempty"`
+	ReadableError string                        `json:"readable_error,omitempty"`
 }
 
-func listChanges(svc changelog.Service, w http.ResponseWriter, r *http.Request) {
+func listChanges(k *chroniclekit.Kit, w http.ResponseWriter, r *http.Request) {
+	svc := k.Service()
 	limit := queryLimit(r)
 	doc := r.URL.Query().Get("doc")
 	rows := []changeRow{}
@@ -306,10 +325,18 @@ func listChanges(svc changelog.Service, w http.ResponseWriter, r *http.Request) 
 			serverError(w, err)
 			return
 		}
+		byDoc := map[string][]string{}
 		for _, dc := range all {
-			for _, ch := range dc.Commit.Changes {
-				rows = append(rows, changeRow{CommitID: dc.Commit.ID, DocID: dc.DocID, Change: ch})
-			}
+			byDoc[dc.DocID] = append(byDoc[dc.DocID], dc.Commit.ID)
+		}
+		// ponytail: one Readables query per doc in the cross-doc feed; batch
+		// across docs if it ever matters.
+		readables := map[string]map[string]chronicleexplain.Readable{}
+		for d, ids := range byDoc {
+			readables[d] = readablesFor(r.Context(), k, d, ids)
+		}
+		for _, dc := range all {
+			rows = appendChangeRows(rows, dc.DocID, dc.Commit, readables[dc.DocID])
 		}
 	} else {
 		cs, err := svc.Commits(r.Context(), doc, limit)
@@ -317,13 +344,49 @@ func listChanges(svc changelog.Service, w http.ResponseWriter, r *http.Request) 
 			serverError(w, err)
 			return
 		}
+		ids := make([]string, len(cs))
+		for i, c := range cs {
+			ids[i] = c.ID
+		}
+		rd := readablesFor(r.Context(), k, doc, ids)
 		for _, c := range cs {
-			for _, ch := range c.Changes {
-				rows = append(rows, changeRow{CommitID: c.ID, DocID: doc, Change: ch})
-			}
+			rows = appendChangeRows(rows, doc, c, rd)
 		}
 	}
 	writeJSON(w, http.StatusOK, rows)
+}
+
+// readablesFor loads a document's sidecars for the feed; a store error
+// degrades to an undecorated feed (logged), never a 500 — the sealed rows are
+// the answer, the sidecar is garnish.
+func readablesFor(ctx context.Context, k *chroniclekit.Kit, docID string, commitIDs []string) map[string]chronicleexplain.Readable {
+	rd, err := k.Readables(ctx, docID, commitIDs)
+	if err != nil {
+		log.Printf("httpapi: readables %s: %v", docID, err)
+		return nil
+	}
+	return rd
+}
+
+// appendChangeRows flattens one commit into feed rows, attaching its readable
+// sidecar per change by ordinal. An error payload marks every row of the
+// commit; a payload whose rows misalign with the sealed changes (older or
+// foreign writer) attaches nothing.
+func appendChangeRows(rows []changeRow, docID string, c changelog.Commit, rd map[string]chronicleexplain.Readable) []changeRow {
+	rb, ok := rd[c.ID]
+	for i, ch := range c.Changes {
+		row := changeRow{CommitID: c.ID, DocID: docID, Change: ch}
+		if ok {
+			switch {
+			case rb.Error != "":
+				row.ReadableError = rb.Error
+			case len(rb.Rows) == len(c.Changes):
+				row.Readable = &rb.Rows[i]
+			}
+		}
+		rows = append(rows, row)
+	}
+	return rows
 }
 
 func getState(k *chroniclekit.Kit, w http.ResponseWriter, r *http.Request) {
@@ -449,7 +512,7 @@ type explainedCommit struct {
 	Changes []chronicleexplain.Explained `json:"changes"`
 }
 
-func postExplain(svc changelog.Service, w http.ResponseWriter, r *http.Request) {
+func postExplain(k *chroniclekit.Kit, w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxBody)
 	var req explainRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -461,16 +524,10 @@ func postExplain(svc changelog.Service, w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Always fetch the WHOLE chain: Explain derives its decoration by replaying
-	// from the root, so a truncated history would silently yield wrong labels,
-	// names, and element identity. Limit trims the response, never the replay.
-	commits, err := svc.Commits(r.Context(), req.Doc, 0)
-	if err != nil {
-		serverError(w, err)
-		return
-	}
-	slices.Reverse(commits) // Commits is newest-first; Explain replays oldest-first
-	rows, err := chronicleexplain.Explain(commits, req.Options.schemaOptions()...)
+	// Kit.Explain replays the WHOLE chain (a truncated history would silently
+	// yield wrong labels, names, and element identity) and overlays stored
+	// seal-time names. Limit trims the response, never the replay.
+	commits, rows, err := k.Explain(r.Context(), req.Doc, req.Options.schemaOptions()...)
 	if err != nil {
 		serverError(w, err)
 		return

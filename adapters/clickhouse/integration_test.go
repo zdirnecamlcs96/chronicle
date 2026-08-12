@@ -53,6 +53,7 @@ func TestClickHouseLog_Conformance(t *testing.T) {
 	conformance.RunDeduperConformance(t, newLog)
 	conformance.RunTailReaderConformance(t, newLog)
 	conformance.RunSnapshotterConformance(t, newLog)
+	conformance.RunAnnotatorConformance(t, newLog)
 }
 
 // TestClickHouseLog_PruneSeen proves PruneSeen deletes seen rows older than

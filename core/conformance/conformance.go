@@ -406,6 +406,122 @@ func RunSnapshotterConformance(t *testing.T, newLog NewLog) {
 	})
 }
 
+// RunAnnotatorConformance is the opt-in contract for backends that implement
+// changelog.Annotator: at most one annotation per (document, commit), latest
+// write wins, bytes round-trip untouched, documents isolated, absent ids
+// simply missing from the result map.
+func RunAnnotatorConformance(t *testing.T, newLog NewLog) {
+	t.Helper()
+
+	ann := func(t *testing.T, log changelog.Log) changelog.Annotator {
+		t.Helper()
+		a, ok := log.(changelog.Annotator)
+		if !ok {
+			t.Skip("backend does not implement changelog.Annotator")
+		}
+		return a
+	}
+
+	t.Run("AbsentIsEmpty", func(t *testing.T) {
+		log, done := newLog(t)
+		defer done()
+		got, err := ann(t, log).LoadAnnotations(context.Background(), "doc", []string{"missing"})
+		if err != nil || len(got) != 0 {
+			t.Fatalf("absent annotation: got %v err=%v, want empty/nil", got, err)
+		}
+	})
+
+	t.Run("EmptyIDs", func(t *testing.T) {
+		log, done := newLog(t)
+		defer done()
+		got, err := ann(t, log).LoadAnnotations(context.Background(), "doc", nil)
+		if err != nil || len(got) != 0 {
+			t.Fatalf("empty ids: got %v err=%v, want empty/nil", got, err)
+		}
+	})
+
+	t.Run("RoundTrip", func(t *testing.T) {
+		log, done := newLog(t)
+		defer done()
+		a := ann(t, log)
+		ctx := context.Background()
+		in := changelog.Annotation{DocID: "doc", CommitID: "c1", Data: []byte(`{"rows":[]}`)}
+		if err := a.SaveAnnotation(ctx, in); err != nil {
+			t.Fatalf("SaveAnnotation: %v", err)
+		}
+		got, err := a.LoadAnnotations(ctx, "doc", []string{"c1"})
+		if err != nil {
+			t.Fatalf("LoadAnnotations: %v", err)
+		}
+		if string(got["c1"]) != string(in.Data) {
+			t.Fatalf("round-trip: got %q, want %q", got["c1"], in.Data)
+		}
+	})
+
+	t.Run("LatestWins", func(t *testing.T) {
+		log, done := newLog(t)
+		defer done()
+		a := ann(t, log)
+		ctx := context.Background()
+		if err := a.SaveAnnotation(ctx, changelog.Annotation{DocID: "doc", CommitID: "c1", Data: []byte("old")}); err != nil {
+			t.Fatal(err)
+		}
+		if err := a.SaveAnnotation(ctx, changelog.Annotation{DocID: "doc", CommitID: "c1", Data: []byte("new")}); err != nil {
+			t.Fatal(err)
+		}
+		got, err := a.LoadAnnotations(ctx, "doc", []string{"c1"})
+		if err != nil || string(got["c1"]) != "new" {
+			t.Fatalf("latest-wins: got %q err=%v, want new", got["c1"], err)
+		}
+	})
+
+	t.Run("BatchSubset", func(t *testing.T) {
+		log, done := newLog(t)
+		defer done()
+		a := ann(t, log)
+		ctx := context.Background()
+		for _, id := range []string{"c1", "c2", "c3"} {
+			if err := a.SaveAnnotation(ctx, changelog.Annotation{DocID: "doc", CommitID: id, Data: []byte(id)}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		got, err := a.LoadAnnotations(ctx, "doc", []string{"c1", "c3", "missing"})
+		if err != nil {
+			t.Fatalf("LoadAnnotations: %v", err)
+		}
+		if len(got) != 2 || string(got["c1"]) != "c1" || string(got["c3"]) != "c3" {
+			t.Fatalf("batch subset: got %v, want exactly c1+c3", got)
+		}
+	})
+
+	t.Run("PerDocIsolation", func(t *testing.T) {
+		log, done := newLog(t)
+		defer done()
+		a := ann(t, log)
+		ctx := context.Background()
+		if err := a.SaveAnnotation(ctx, changelog.Annotation{DocID: "docA", CommitID: "c1", Data: []byte("A")}); err != nil {
+			t.Fatal(err)
+		}
+		if got, _ := a.LoadAnnotations(ctx, "docB", []string{"c1"}); len(got) != 0 {
+			t.Fatal("docB resolved docA's annotation")
+		}
+	})
+
+	t.Run("ContextCancellation", func(t *testing.T) {
+		log, done := newLog(t)
+		defer done()
+		a := ann(t, log)
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if err := a.SaveAnnotation(ctx, changelog.Annotation{DocID: "doc", CommitID: "c1"}); !errors.Is(err, context.Canceled) {
+			t.Fatalf("SaveAnnotation: want context.Canceled, got %v", err)
+		}
+		if _, err := a.LoadAnnotations(ctx, "doc", []string{"c1"}); !errors.Is(err, context.Canceled) {
+			t.Fatalf("LoadAnnotations: want context.Canceled, got %v", err)
+		}
+	})
+}
+
 // sealN seals n chained commits into log via a Recorder with a MONOTONIC clock,
 // so every commit gets a distinct, increasing timestamp. This keeps the suite
 // portable: backends that order by seq (SQL) AND backends that order by

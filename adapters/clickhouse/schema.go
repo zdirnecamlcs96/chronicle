@@ -41,9 +41,20 @@ const snapshotsDDL = `CREATE TABLE IF NOT EXISTS snapshots (
 ) ENGINE = ReplacingMergeTree(at)
 ORDER BY (doc_id)`
 
+// annotations holds per-commit display sidecars OUTSIDE the hash seal, one
+// per (doc, commit), latest wins via the `at` version column. Non-authoritative:
+// TRUNCATE is always safe, readers fall back to live decoration.
+const annotationsDDL = `CREATE TABLE IF NOT EXISTS annotations (
+	doc_id    String,
+	commit_id String,
+	data      String,
+	at        DateTime64(6)
+) ENGINE = ReplacingMergeTree(at)
+ORDER BY (doc_id, commit_id)`
+
 // Migrate creates the schema if absent. Safe to call on every startup.
 func (l *Log) Migrate(ctx context.Context) error {
-	for _, ddl := range []string{commitsDDL, seenDDL, snapshotsDDL} {
+	for _, ddl := range []string{commitsDDL, seenDDL, snapshotsDDL, annotationsDDL} {
 		if _, err := l.db.ExecContext(ctx, ddl); err != nil {
 			return fmt.Errorf("changelog-clickhouse: migrate: %w", err)
 		}

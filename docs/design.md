@@ -209,11 +209,21 @@ option changes what gets **recorded**.
 
 That asymmetry decides two things that otherwise look inconsistent.
 
-**Display metadata is never stored.** Not because storage is expensive: the
-change JSON is the commit-hash preimage, so anything added to it could never be
-backfilled, and history written before a schema existed would render blind
-forever. Decoration is derived on read so yesterday's commits benefit from
-today's labels.
+**Display metadata is never stored inside the seal.** Not because storage is
+expensive: the change JSON is the commit-hash preimage, so anything added to it
+could never be backfilled, and history written before a schema existed would
+render blind forever. Decoration is derived on read so yesterday's commits
+benefit from today's labels.
+
+The one thing read-time derivation cannot do is resolve a reference whose
+entity is gone: an id whose item was deleted has no name to look up, and a
+renamed item resolves to its *latest* name, not the name at change time. For
+that, `chroniclekit.WithReadable()` opts a writer into a per-commit readable
+sidecar — display rows frozen at seal time (`kit/explain.Readable`), stored
+via the optional `Annotator` capability *outside* the hash seal. It is a
+non-authoritative projection: deleting it is always safe, readers overlay only
+its name-resolution fields (labels and trails still re-render live), and
+commits without one decorate exactly as before.
 
 **`WithStrictIdentity` exists** because the default failure is silent. Forget to
 declare array identity and the write succeeds, the history looks plausible, and

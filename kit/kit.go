@@ -25,8 +25,24 @@ var ErrUnsupportedOp = errors.New("chroniclekit: unsupported JSON Patch op")
 // them, and reconstruct/render on read. It is adapter-agnostic — the caller
 // injects the Log (and thus picks the backend).
 type Kit struct {
-	svc changelog.Service
-	r   *chronicleview.Reader
+	svc      changelog.Service
+	r        *chronicleview.Reader
+	ann      changelog.Annotator // nil when the backend lacks the capability
+	readable bool
+}
+
+// Option configures a Kit at construction.
+type Option func(*Kit)
+
+// WithReadable enables write-time readable sidecars: each RecordUpdate/
+// RecordPatch seal also decorates the sealed changes under the call's diff
+// options (chronicleexplain.ExplainChanges) and stores the result via the
+// backend's changelog.Annotator — outside the hash seal, best-effort, never
+// failing the commit. Pass fresh WithNames pairs in WithDiffOptions to freeze
+// external referents' names as they are at seal time. On a backend without
+// the Annotator capability the option is a silent no-op.
+func WithReadable() Option {
+	return func(k *Kit) { k.readable = true }
 }
 
 // New returns a Kit over any Log, building the changelog.Service it needs. This
@@ -34,16 +50,42 @@ type Kit struct {
 //
 //	log, err := changelogsql.Open(ctx, dsn, changelogsql.WithMigrate(true))
 //	k := chroniclekit.New(log)
-func New(log changelog.Log) *Kit {
-	return NewWithService(changelog.NewService(log))
+func New(log changelog.Log, opts ...Option) *Kit {
+	return NewWithService(changelog.NewService(log), opts...)
 }
 
 // NewWithService returns a Kit over an existing Service — for callers that
 // already hold one, or that wrap it. Its reader detects the backend's optional
-// Snapshotter and TailReader capabilities once, here; a Service that exposes
-// no Unwrap simply gets full-replay reads.
-func NewWithService(svc changelog.Service) *Kit {
-	return &Kit{svc: svc, r: chronicleview.New(svc)}
+// Snapshotter and TailReader capabilities once, here — and the Annotator for
+// readable sidecars likewise; a Service that exposes no Unwrap simply gets
+// full-replay reads.
+func NewWithService(svc changelog.Service, opts ...Option) *Kit {
+	k := &Kit{svc: svc, r: chronicleview.New(svc), ann: annotatorFor(svc)}
+	for _, o := range opts {
+		o(k)
+	}
+	return k
+}
+
+// annotatorFor walks svc's Unwrap() chain — the same walk chronicleview.New
+// uses to detect the backend's optional capabilities — looking for one that
+// exposes changelog.Annotator. nil means none does.
+func annotatorFor(svc changelog.Service) changelog.Annotator {
+	var l changelog.Log
+	if u, ok := svc.(interface{ Unwrap() changelog.Log }); ok {
+		l = u.Unwrap()
+	}
+	for l != nil {
+		if a, ok := l.(changelog.Annotator); ok {
+			return a
+		}
+		u, ok := l.(interface{ Unwrap() changelog.Log })
+		if !ok {
+			break
+		}
+		l = u.Unwrap()
+	}
+	return nil
 }
 
 // Service returns the underlying Service (for reads the Kit does not wrap).
@@ -83,6 +125,8 @@ type recordConfig struct {
 	baseline        bool
 	baselineMessage string
 	baselineActor   string
+	annotate        bool
+	annotateBase    any
 }
 
 // RecordOption configures a single Record call.
@@ -147,6 +191,14 @@ func WithCaptureBaseline(message, actor string) RecordOption {
 	}
 }
 
+// withReadableBase marks a seal as decoratable for the readable sidecar: base
+// is the document state the changes apply to. Unexported on purpose — only
+// RecordUpdate and sealBaseline hold that state; a direct RecordChanges seal
+// has none and is skipped (absence already means "decorate live").
+func withReadableBase(base any) RecordOption {
+	return func(c *recordConfig) { c.annotate, c.annotateBase = true, base }
+}
+
 // RecordUpdate diffs before→after and seals the resulting Changes as one commit.
 // If nothing changed it returns changelog.ErrEmptyChanges (reusing core's
 // sentinel — there is nothing to commit). WithCaptureBaseline additionally
@@ -174,7 +226,7 @@ func (k *Kit) RecordUpdate(ctx context.Context, docID string, before, after any,
 			opts = append(opts, WithParent(baseID))
 		}
 	}
-	return k.RecordChanges(ctx, docID, changes, opts...)
+	return k.RecordChanges(ctx, docID, changes, append(opts, withReadableBase(before))...)
 }
 
 // sealBaseline seals Diff(nil, before) as a root commit for a document with no
@@ -196,8 +248,11 @@ func (k *Kit) sealBaseline(ctx context.Context, docID string, before any, cfg *r
 	if len(base) == 0 {
 		return "", nil // empty-object before: nothing to capture
 	}
+	// The baseline decorates under the same diff options as the delta, from a
+	// nil root — the state its Diff(nil, before) changes apply to.
 	c, err := k.RecordChanges(ctx, docID, base,
-		WithMessage(cfg.baselineMessage), WithActor(cfg.baselineActor))
+		WithMessage(cfg.baselineMessage), WithActor(cfg.baselineActor),
+		WithDiffOptions(cfg.diffOpts...), withReadableBase(nil))
 	if err != nil {
 		return "", err
 	}
@@ -274,5 +329,11 @@ func (k *Kit) RecordChanges(ctx context.Context, docID string, changes []changel
 	if cfg.hasParent {
 		sopts = append(sopts, changelog.WithSealParent(cfg.parent))
 	}
-	return k.svc.Seal(ctx, docID, changes, cfg.message, sopts...)
+	c, err := k.svc.Seal(ctx, docID, changes, cfg.message, sopts...)
+	if err == nil && k.readable && k.ann != nil && cfg.annotate {
+		// Decorates c.Changes — the sealed record, At-stamped — not the input
+		// slice. Best-effort by contract: never fails the commit.
+		k.saveReadable(ctx, docID, c, &cfg)
+	}
+	return c, err
 }

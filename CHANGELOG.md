@@ -8,6 +8,46 @@ Modules are versioned in lockstep. A single version covers every module and is
 published as per-module Go tags: `core/vX.Y.Z`, `adapters/memory/vX.Y.Z`,
 `adapters/sql/vX.Y.Z`, `adapters/clickhouse/vX.Y.Z`, and `kit/vX.Y.Z`.
 
+## [0.4.0] - 2026-08-12
+
+Released two-phase: `core/v0.4.0` first; the kit and adapter tags follow once
+their `go.mod` core requirement is bumped to it.
+
+### Added
+- **`core`**: `Annotator` optional capability — at most one opaque annotation
+  per `(docID, commitID)`, latest write wins, stored **outside** the hash
+  seal. Non-authoritative by construction: deleting annotations is always
+  safe, readers fall back to live decoration. `RunAnnotatorConformance` joins
+  the opt-in conformance suites.
+- **`adapters/sql`, `adapters/clickhouse`, `adapters/memory`**: implement
+  `Annotator` (new `annotations` table; `Migrate` creates it on next boot —
+  `CREATE TABLE IF NOT EXISTS`, safe on every startup).
+- **`kit`**: `WithReadable()` constructor option — the readable sidecar.
+  Each `RecordUpdate`/`RecordPatch` seal (baselines included) also decorates
+  the sealed changes under the call's diff options (`ExplainChanges`, the new
+  single-commit form of `Explain`) and stores the rows per commit via the
+  backend's `Annotator`. Fresh `WithNames` pairs passed in `WithDiffOptions`
+  freeze into the sidecar, so a referent's name survives its later deletion or
+  rename — the one thing read-time decoration cannot recover. Best-effort by
+  contract: a sidecar failure never fails the commit; a persistent one lands
+  an `{"error": …}` stub so readers can acknowledge the gap. Direct
+  `RecordChanges` seals store nothing (no before-state; absence means
+  "decorate live", like all pre-feature history).
+- **`kit`**: `Kit.Explain` — fetch + replay + decorate in one call, overlaying
+  name-resolution fields (`Display`, `Element.Name`) from stored sidecars
+  (stored wins; labels and trails always render live). `Kit.Readables` returns
+  the raw stored payloads.
+- **`kit/httpapi`**: `Handler` takes `chroniclekit.Option`s
+  (`Handler(svc, chroniclekit.WithReadable())` opts a server's writes in);
+  `POST /commits` `schema` gains `names`; `GET /changes` rows carry
+  `readable` / `readable_error` when a sidecar exists; `POST /explain` now
+  overlays stored names via `Kit.Explain`.
+
+### Changed
+- Docs: "display metadata is never stored" is now scoped to the hash seal —
+  the readable sidecar is an optional, non-authoritative projection outside it
+  (docs/concepts.md, docs/design.md, docs/reference.md, docs/kit.md).
+
 ## [0.3.1] - 2026-08-11
 
 Kit-only release: `kit/v0.3.1` is the sole tag. Core and the adapters are

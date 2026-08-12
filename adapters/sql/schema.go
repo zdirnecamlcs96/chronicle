@@ -33,6 +33,9 @@ const (
 //   - snapshots is a pure cache (one row per doc, latest wins; TRUNCATE is
 //     always safe); MEDIUMBLOB = 16 MB ceiling — a materialized doc bigger than
 //     that should not be snapshotted.
+//   - annotations holds per-commit display sidecars OUTSIDE the hash seal
+//     (one row per (doc, commit), latest wins). Non-authoritative: deleting
+//     rows is always safe, readers fall back to live decoration.
 func (d Dialect) ddl() []string {
 	switch d {
 	default: // MySQL
@@ -66,6 +69,13 @@ func (d Dialect) ddl() []string {
 				state     MEDIUMBLOB   NOT NULL,
 				at        DATETIME(6)  NOT NULL,
 				PRIMARY KEY (doc_id)
+			) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+			`CREATE TABLE IF NOT EXISTS annotations (
+				doc_id    VARCHAR(255) NOT NULL,
+				commit_id CHAR(64)     NOT NULL,
+				data      MEDIUMBLOB   NOT NULL,
+				at        DATETIME(6)  NOT NULL,
+				PRIMARY KEY (doc_id, commit_id)
 			) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 		}
 	}
