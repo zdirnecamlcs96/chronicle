@@ -8,6 +8,80 @@ summary: >-
   real traffic. The in-memory adapter is dev/test only and is not covered here.
 ---
 
+## Storage schema
+
+Both `adapters/sql` and `adapters/clickhouse` create the same 4 tables —
+`commits`, `seen`, `snapshots`, `annotations` — the same logical model on
+different storage engines.
+
+```mermaid
+%% alt: Entity relationship diagram of the four chronicle tables. commits is the append-only log; snapshots relates to it one-to-one by doc_id, while annotations and seen relate to it one-to-many by doc_id and commit_id.
+erDiagram
+    commits {
+        String doc_id
+        String id
+        String parent
+        DateTime64 at
+        String authors
+        String message
+        String changes
+    }
+    seen {
+        String idempotency_key
+        String doc_id
+        String commit_id
+        DateTime64 at
+    }
+    snapshots {
+        String doc_id
+        String commit_id
+        String state
+        DateTime64 at
+    }
+    annotations {
+        String doc_id
+        String commit_id
+        String data
+        DateTime64 at
+    }
+
+    commits ||--o| snapshots  : "doc_id"
+    commits ||--o{ annotations : "doc_id, commit_id"
+    commits ||--o{ seen : "doc_id, commit_id"
+```
+
+Only `commits` is authoritative. The other three are derived — each one buys
+back something you would otherwise pay for at read time, and each can be
+rebuilt or dropped without losing history.
+
+| Table | What it is for | Safe to truncate? |
+|---|---|---|
+| `commits` | The log itself: append-only, hash-chained, one row per sealed commit | **No** — this is the data |
+| `seen` | Idempotency — maps a delivery key to the commit it already produced | Yes, prunable by age |
+| `snapshots` | Read cache — materialized state pinned to a commit, so reads skip replaying from root | Yes, replay rebuilds it |
+| `annotations` | Display sidecar — readable rows frozen at seal time, stored outside the hash | Yes, reads fall back to live decoration |
+
+`commits.id` is a content hash over `(parent, message, changes)`, and `parent`
+points at the previous commit — that chain is what makes tampering detectable.
+`authors` is derived from `changes` and deliberately sits outside the hash, so
+it stays queryable without widening what the seal covers. The same reasoning
+keeps `annotations` outside the preimage: a display concern must never change
+what a commit hashes to.
+
+Lose `seen`, `snapshots` and `annotations` and you lose idempotency, read speed
+and readable history — not history itself.
+
+Neither engine enforces these relationships with a foreign key — every one is
+application-enforced, scoped by `doc_id`. Per-engine differences:
+
+| | SQL (MySQL) | ClickHouse |
+|---|---|---|
+| `seq` column | present — orders commits, backs the primary key | absent |
+| Consistency | `PRIMARY KEY` / `UNIQUE` / index constraints, enforced on write | none — `ReplacingMergeTree` + `FINAL` dedup on read |
+| `authors` / `changes` / `state` / `data` types | `JSON` / `MEDIUMBLOB` | `String` |
+
+Full column-by-column reference: [adapters/sql/README.md](https://github.com/zdirnecamlcs96/chronicle/blob/main/adapters/sql/README.md), [adapters/clickhouse/README.md](https://github.com/zdirnecamlcs96/chronicle/blob/main/adapters/clickhouse/README.md).
+
 ## Pick a backend by consistency model
 
 | | `adapters/sql` (MySQL) | `adapters/clickhouse` |
@@ -27,6 +101,8 @@ arrival order is well-defined even under a fork; ClickHouse has no locks, so
 ordering rests on `at` timestamps and producer clock skew can reorder arrival.
 
 ## SQL (MySQL) operations
+
+Full table schema, columns and keys: [adapters/sql/README.md](https://github.com/zdirnecamlcs96/chronicle/blob/main/adapters/sql/README.md).
 
 **DSN.** Must include `parseTime=true` (DATETIME scans into `time.Time`). Example:
 `user:pass@tcp(host:3306)/db?parseTime=true`.
@@ -58,6 +134,8 @@ error — the caller should retry the `Seal`/`AppendCommit` call itself, not
 treat it as a conflict to reconcile. Surface it as a transient error, not a 5xx.
 
 ## ClickHouse operations
+
+Full table schema, columns and keys: [adapters/clickhouse/README.md](https://github.com/zdirnecamlcs96/chronicle/blob/main/adapters/clickhouse/README.md).
 
 **`FINAL` cost.** Every `Head`/`Commits` read uses `… FINAL`, which forces
 ReplacingMergeTree dedup at query time. Cost grows with the number of unmerged

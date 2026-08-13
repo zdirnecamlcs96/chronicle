@@ -1,0 +1,11 @@
+# Jekyll for previewing docs/ locally. Builds native on arm64 and amd64 —
+# the upstream jekyll/jekyll image is amd64-only and needs emulation.
+#
+# docs/ has no Gemfile and _config.yml pulls no theme or plugin gems, so a bare
+# jekyll install is enough. Add a Gemfile + `bundle install` here if that changes.
+FROM docker.io/library/ruby:3.3-alpine
+
+RUN apk add --no-cache build-base && gem install jekyll --no-document
+
+WORKDIR /srv/jekyll
+EXPOSE 4000

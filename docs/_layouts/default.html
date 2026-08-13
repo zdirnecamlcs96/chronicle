@@ -32,6 +32,10 @@ mermaid.initialize({
   fontFamily: "'Geist Mono', ui-monospace, monospace",
   flowchart: { curve: 'basis' },
   themeVariables: {
+    // erDiagram derives its attribute-row fills from primaryColor, and the base
+    // theme lightens unless told the palette is dark — which left odd rows as
+    // near-white boxes under the light textColor. Flowcharts never hit this.
+    darkMode: true,
     background: '#0F0F0F',
     primaryColor: '#141414',
     primaryTextColor: '#FAFAFA',

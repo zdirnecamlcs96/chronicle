@@ -1,0 +1,68 @@
+# Local dev services. Works with `podman compose` and `docker compose`.
+#
+#   podman compose up -d --wait          # everything
+#   podman compose up -d mysql clickhouse # just the databases
+#
+# Integration tests (both skip unless their DSN is set):
+#
+#   CHANGELOG_SQL_TEST_DSN='root:root@tcp(127.0.0.1:3306)/changelog?parseTime=true' \
+#     go test -tags integration ./adapters/sql/...
+#   CHANGELOG_CLICKHOUSE_TEST_DSN='clickhouse://default:@127.0.0.1:9000/changelog' \
+#     go test -tags integration ./adapters/clickhouse/...
+#
+# Docs preview: http://localhost:4000/chronicle/
+#
+# ponytail: no volumes — these are throwaway test databases; `down` should lose
+# the data. Add named volumes if you ever want state to survive a restart.
+
+services:
+  mysql:
+    image: docker.io/library/mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: changelog
+    ports:
+      - "3306:3306"
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-proot"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+
+  clickhouse:
+    image: docker.io/clickhouse/clickhouse-server:24.8
+    environment:
+      CLICKHOUSE_DB: changelog
+    ports:
+      - "9000:9000"   # native protocol — what the adapter's DSN uses
+      - "8123:8123"   # HTTP, for curl/clickhouse-client poking
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--query", "SELECT 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+
+  # NOTE: a hand-built `chronicle-docs` container already binds these ports.
+  # Stop it first (`podman rm -f chronicle-docs`) before starting this service.
+  docs:
+    build:
+      context: .
+      dockerfile: Containerfile.docs
+    volumes:
+      - ./docs:/srv/jekyll:z
+    # Empty --baseurl so links resolve at localhost:4000/ instead of /chronicle/
+    # (_config.yml sets /chronicle for GitHub Pages). --force_polling because
+    # inotify does not cross the podman-machine VM boundary.
+    # --destination keeps the generated _site out of the repo working tree.
+    command: >-
+      jekyll serve --host 0.0.0.0 --port 4000 --baseurl ""
+      --destination /tmp/_site --force_polling --livereload
+    ports:
+      - "4000:4000"
+      - "35729:35729"  # livereload

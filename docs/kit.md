@@ -323,6 +323,31 @@ hash seal. Best-effort by contract: a sidecar failure never fails the commit
 deleting sidecars is always safe, and history without them — everything
 recorded before you opted in — keeps decorating live.
 
+### When the sidecar is missing, stale, or failed
+
+**The sidecar is an optimisation, never a dependency.** Every failure mode
+below degrades to live read-time decoration — the same
+`chronicleexplain.Explain` that section 3 covers — which always works because
+it replays the chain from scratch. A document's commits routinely mix
+sidecar-carrying and sidecar-less entries; nothing about reading them
+requires they match.
+
+| Situation | Why | What the reader sees |
+|---|---|---|
+| `WithReadable` not passed | off by default | live decoration, every commit |
+| `RecordChanges` called directly | no before-state to decorate against | no sidecar, no stub — silent absence |
+| Backend lacks `Annotator` | `WithReadable` is a silent no-op | live decoration, every commit |
+| Sidecar write fails | retried with an `{"error": …}` stub | stub stored if the retry lands, else silent absence — commit still succeeds either way |
+| Sidecar carries an error stub | nothing usable to overlay | live decoration for that commit |
+| Sidecar row count ≠ commit's changes | stale sidecar or a foreign writer | live decoration for that commit |
+| Sidecar usable | merge is per field | stored `Display` and non-empty `Element.Name` win; live fills every other field |
+| Sidecar load itself errors | `Kit.Explain` logs and continues | live decoration for the whole read |
+
+A write-side failure never surfaces as a read error: the worst case is
+absence, and absence just means the row decorates live instead of frozen.
+`saveReadable` logs `chroniclekit: readable sidecar %s/%s dropped: %v` only
+when both the payload and the error-stub write fail.
+
 ## 3. Read the chain
 
 `Commits` is newest-first, like `git log`. `Explain` replays from the root, so
