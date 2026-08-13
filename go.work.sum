@@ -45,6 +45,7 @@ github.com/tklauser/numcpus v0.6.1/go.mod h1:1XfjsgE2zo8GVw7POkMbHENHzVg3GzmoZ9f
 github.com/yusufpapurcu/wmi v1.2.4/go.mod h1:SBZ9tNy3G9/m5Oi98Zks0QjeHVDvuK0qfxQmPyzfmi0=
 github.com/zdirnecamlcs96/chronicle/core v0.1.0/go.mod h1:ohbd0lmkAxMaCy+mI+7DOFYfFmfNS/ZBtRuRf9AqUu0=
 github.com/zdirnecamlcs96/chronicle/core v0.2.0/go.mod h1:ohbd0lmkAxMaCy+mI+7DOFYfFmfNS/ZBtRuRf9AqUu0=
+github.com/zdirnecamlcs96/chronicle/core v0.4.0/go.mod h1:ohbd0lmkAxMaCy+mI+7DOFYfFmfNS/ZBtRuRf9AqUu0=
 go.opentelemetry.io/auto/sdk v1.2.1/go.mod h1:KRTj+aOaElaLi+wW1kO/DZRXwkF4C5xPbEe3ZiIhN7Y=
 go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.49.0/go.mod h1:p8pYQP+m5XfbZm9fxtSKAbM6oIllS7s2AfxrChvc7iw=
 go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.19.0/go.mod h1:IPtUMKL4O3tH5y+iXVyAXqpAwMuzC1IrxVS81rummfE=

@@ -10,8 +10,8 @@ published as per-module Go tags: `core/vX.Y.Z`, `adapters/memory/vX.Y.Z`,
 
 ## [0.4.0] - 2026-08-12
 
-Released two-phase: `core/v0.4.0` first; the kit and adapter tags follow once
-their `go.mod` core requirement is bumped to it.
+Released two-phase: `core/v0.4.0` shipped first, and the kit and adapter tags
+followed once their `go.mod` core requirement was bumped to it.
 
 ### Added
 - **`core`**: `Annotator` optional capability — at most one opaque annotation
@@ -42,6 +42,13 @@ their `go.mod` core requirement is bumped to it.
   `POST /commits` `schema` gains `names`; `GET /changes` rows carry
   `readable` / `readable_error` when a sidecar exists; `POST /explain` now
   overlays stored names via `Kit.Explain`.
+
+### Fixed
+- **`kit`**: the readable sidecar's failure stub no longer stores the raw
+  backend error. A `SaveAnnotation` failure logged the driver's error text
+  into the sidecar, where `GET /changes` served it verbatim as
+  `readable_error`; it now logs server-side and stores a generic `"sidecar
+  unavailable"` stub.
 
 ### Changed
 - Docs: "display metadata is never stored" is now scoped to the hash seal —
