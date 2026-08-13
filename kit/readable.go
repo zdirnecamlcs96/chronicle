@@ -26,7 +26,8 @@ func (k *Kit) saveReadable(ctx context.Context, docID string, c changelog.Commit
 		payload = chronicleexplain.ReadableOf(rows)
 	}
 	if err := k.putReadable(ctx, docID, c.ID, payload); err != nil {
-		if err2 := k.putReadable(ctx, docID, c.ID, chronicleexplain.Readable{Error: err.Error()}); err2 != nil {
+		log.Printf("chroniclekit: readable sidecar %s/%s save failed: %v", docID, c.ID, err)
+		if err2 := k.putReadable(ctx, docID, c.ID, chronicleexplain.Readable{Error: "sidecar unavailable"}); err2 != nil {
 			log.Printf("chroniclekit: readable sidecar %s/%s dropped: %v", docID, c.ID, err2)
 		}
 	}
