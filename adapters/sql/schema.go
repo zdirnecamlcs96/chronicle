@@ -30,31 +30,44 @@ const (
 //   - KEY (doc_id, parent): a plain index — forks (two commits sharing a
 //     parent) are legal recorded facts, so nothing constrains them; the index
 //     only keeps parent lookups fast.
+//   - doc_locks holds one row per document, claimed with INSERT ... ON
+//     DUPLICATE KEY UPDATE before the head read: locking this fixed row
+//     serializes concurrent appenders instead of racing InnoDB's gap lock on
+//     the moving tail of commits (which deadlocks — see appendOnce).
 //   - snapshots is a pure cache (one row per doc, latest wins; TRUNCATE is
 //     always safe); MEDIUMBLOB = 16 MB ceiling — a materialized doc bigger than
 //     that should not be snapshotted.
 //   - annotations holds per-commit display sidecars OUTSIDE the hash seal
 //     (one row per (doc, commit), latest wins). Non-authoritative: deleting
 //     rows is always safe, readers fall back to live decoration.
+//   - sig_key_id/signature are NULLable: unsigned commits store NULL, mapped
+//     to/from the zero value ("" / nil) at the Go boundary — see appendOnce
+//     and scanCommit.
 func (d Dialect) ddl() []string {
 	switch d {
 	default: // MySQL
 		return []string{
 			`CREATE TABLE IF NOT EXISTS commits (
-				doc_id   VARCHAR(255)    NOT NULL,
-				seq      BIGINT UNSIGNED NOT NULL,
-				id       CHAR(64)        NOT NULL,
-				parent   CHAR(64)        NOT NULL DEFAULT '',
-				at       DATETIME(6)     NOT NULL,
-				authors  JSON            NOT NULL,
-				message  TEXT            NOT NULL,
-				changes  JSON            NOT NULL,
+				doc_id     VARCHAR(255)    NOT NULL,
+				seq        BIGINT UNSIGNED NOT NULL,
+				id         CHAR(64)        NOT NULL,
+				parent     CHAR(64)        NOT NULL DEFAULT '',
+				at         DATETIME(6)     NOT NULL,
+				authors    JSON            NOT NULL,
+				message    TEXT            NOT NULL,
+				changes    JSON            NOT NULL,
+				sig_key_id VARCHAR(255)    NULL,
+				signature  VARBINARY(64)   NULL,
 				PRIMARY KEY (doc_id, seq),
 				UNIQUE KEY uq_commit_id (doc_id, id),
 				KEY idx_doc_parent (doc_id, parent),
 				KEY idx_id (id),
 				KEY idx_at (at),
 				KEY idx_doc_at (doc_id, at)
+			) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+			`CREATE TABLE IF NOT EXISTS doc_locks (
+				doc_id VARCHAR(255) NOT NULL,
+				PRIMARY KEY (doc_id)
 			) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 			`CREATE TABLE IF NOT EXISTS seen (
 				idempotency_key VARCHAR(255) NOT NULL,
@@ -102,6 +115,18 @@ func (l *Log) Migrate(ctx context.Context) error {
 		if _, err := l.db.ExecContext(ctx,
 			`ALTER TABLE commits DROP INDEX uq_doc_parent, ADD INDEX idx_doc_parent (doc_id, parent)`); err != nil {
 			return fmt.Errorf("changelog-sql: migrate anti-fork index: %w", err)
+		}
+	}
+	var cols int
+	if err := l.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM information_schema.columns
+		 WHERE table_schema = DATABASE() AND table_name = 'commits' AND column_name = 'sig_key_id'`).Scan(&cols); err != nil {
+		return fmt.Errorf("changelog-sql: migrate probe: %w", err)
+	}
+	if cols == 0 {
+		if _, err := l.db.ExecContext(ctx,
+			`ALTER TABLE commits ADD COLUMN sig_key_id VARCHAR(255) NULL, ADD COLUMN signature VARBINARY(64) NULL`); err != nil {
+			return fmt.Errorf("changelog-sql: migrate signature columns: %w", err)
 		}
 	}
 	return nil

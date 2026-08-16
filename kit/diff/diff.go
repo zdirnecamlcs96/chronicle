@@ -9,6 +9,7 @@ package chroniclediff
 import (
 	"errors"
 	"fmt"
+	"log"
 	"sort"
 	"strconv"
 
@@ -55,9 +56,9 @@ var ErrBadCanon = errors.New("chroniclediff: value type Canon must return a JSON
 // options, arrays without a usable identity and all other values diff exactly
 // as before.
 //
-// States are expected to be object- or array-rooted (the CRUD norm). A scalar
-// root produces a single change with an empty Path, which
-// chronicleview.Reconstruct does not apply; diff object/array documents.
+// States are typically object- or array-rooted (the CRUD norm). A scalar root
+// produces a single change with an empty Path — a whole-root replace, which
+// chronicleview.Reconstruct applies like any other.
 func Diff(before, after any, opts ...chronicleschema.Option) ([]changelog.Change, error) {
 	b, err := docmodel.Normalize(before)
 	if err != nil {
@@ -140,10 +141,10 @@ func (d *differ) value(path, schema []string, before, after any, out *[]changelo
 	}
 
 	// Leaf, or any container-type change (object↔array↔scalar↔null) handled as a
-	// whole-value replace; the kit's internal docmodel.Apply applies it correctly
-	// on reconstruct. A present JSON null reaches here and round-trips as To/From
-	// "null" (distinct from absence, which object/array express as
-	// create/delete).
+	// whole-value replace; docmodel.Apply replays it correctly, including at the
+	// document root (an empty Path there means "replace the whole root value").
+	// A present JSON null reaches here and round-trips as To/From "null"
+	// (distinct from absence, which object/array express as create/delete).
 	if !jsonEqual(before, after) {
 		*out = append(*out, changelog.Change{
 			Path: docmodel.JoinPath(path),
@@ -158,6 +159,17 @@ func (d *differ) object(path, schema []string, before, after map[string]any, out
 	for _, k := range unionKeys(before, after) {
 		bv, bok := before[k]
 		av, aok := after[k]
+		// An empty-string key collides with the root path in docmodel's path
+		// grammar (JoinPath of a lone "" segment equals JoinPath of no segments),
+		// so it can never be recorded unambiguously at any depth. Skip it rather
+		// than seal a Change docmodel.Apply cannot replay — but only warn when
+		// the skip actually suppresses a real difference.
+		if k == "" {
+			if bok != aok || !jsonEqual(bv, av) {
+				log.Printf("chroniclediff: skipping empty-string object key at %q", docmodel.JoinPath(path))
+			}
+			continue
+		}
 		child := docmodel.ChildPath(path, k)
 		switch {
 		case bok && aok:

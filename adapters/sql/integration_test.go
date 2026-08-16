@@ -151,6 +151,103 @@ func TestSQLLog_ConcurrentAppendAllSucceed(t *testing.T) {
 	}
 }
 
+// TestSQLLog_ConcurrentSameDocHammer hammers one document with many writers
+// each doing several sequential commits: every append must succeed and the
+// resulting chain must hold exactly writers*perWriter commits and verify
+// clean. Regression guard for the doc_locks per-document serialization.
+func TestSQLLog_ConcurrentSameDocHammer(t *testing.T) {
+	db := testDB(t)
+	l := freshLog(t, db)
+	ctx := context.Background()
+
+	const writers = 8
+	const perWriter = 10
+	start := make(chan struct{})
+	errs := make(chan error, writers)
+	var wg sync.WaitGroup
+	for i := 0; i < writers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			rec := changelog.NewRecorder("hammer-doc", l)
+			<-start
+			for j := 0; j < perWriter; j++ {
+				rec.Append(changelog.Change{Actor: "a", Path: "p", Kind: "put", To: fmt.Sprintf("v%d-%d", i, j)})
+				if _, err := rec.Commit(ctx); err != nil {
+					errs <- err
+					return
+				}
+			}
+			errs <- nil
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("append must always succeed under the fork model, got %v", err)
+		}
+	}
+
+	commits, err := l.Commits(ctx, "hammer-doc", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(commits) != writers*perWriter {
+		t.Fatalf("stored %d commits, want %d", len(commits), writers*perWriter)
+	}
+	if err := changelog.Verify(ctx, l, "hammer-doc"); err != nil {
+		t.Fatalf("hammered history must verify: %v", err)
+	}
+}
+
+// TestSQLLog_ConcurrentNewDocBurst creates many BRAND-NEW documents at once,
+// with doc_ids chosen to sort adjacently so their first head reads land in the
+// same commits index gap. Regression guard for the cross-document gap-lock
+// deadlock the head read's FOR UPDATE used to cause (see appendOnce).
+func TestSQLLog_ConcurrentNewDocBurst(t *testing.T) {
+	db := testDB(t)
+	l := freshLog(t, db)
+	ctx := context.Background()
+
+	const writers = 8
+	start := make(chan struct{})
+	errs := make(chan error, writers)
+	var wg sync.WaitGroup
+	for i := 0; i < writers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			docID := fmt.Sprintf("burst-%03d", i)
+			rec := changelog.NewRecorder(docID, l)
+			rec.Append(changelog.Change{Actor: "a", Path: "p", Kind: "put", To: "root"})
+			<-start
+			_, err := rec.Commit(ctx)
+			errs <- err
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("first append to a distinct new document must always succeed, got %v", err)
+		}
+	}
+
+	for i := 0; i < writers; i++ {
+		docID := fmt.Sprintf("burst-%03d", i)
+		commits, err := l.Commits(ctx, docID, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(commits) != 1 {
+			t.Fatalf("doc %s stored %d commits, want 1", docID, len(commits))
+		}
+	}
+}
+
 // TestSQLLog_MigrateFromAntiForkSchema proves Migrate upgrades a database that
 // still carries the pre-fork-tolerance UNIQUE(doc_id, parent): the constraint
 // is swapped for a plain index and a fork then stores cleanly.
@@ -181,6 +278,81 @@ func TestSQLLog_MigrateFromAntiForkSchema(t *testing.T) {
 	}
 	if got, _ := l.Commits(ctx, "doc", 0); len(got) != 3 {
 		t.Fatalf("stored %d commits, want 3 (fork must be storable after migrate)", len(got))
+	}
+}
+
+// TestSQLLog_MigrateFromPreSignatureSchema proves Migrate adds the
+// sig_key_id/signature columns to a commits table that predates them, and
+// that a signed commit then stores and reads back correctly.
+func TestSQLLog_MigrateFromPreSignatureSchema(t *testing.T) {
+	db := testDB(t)
+	l := freshLog(t, db)
+	ctx := context.Background()
+
+	// Regress the schema to the pre-signature shape, then migrate again.
+	if _, err := db.Exec(`ALTER TABLE commits DROP COLUMN sig_key_id, DROP COLUMN signature`); err != nil {
+		t.Fatalf("install old schema: %v", err)
+	}
+	if err := l.Migrate(ctx); err != nil {
+		t.Fatalf("migrate from old schema: %v", err)
+	}
+
+	c := changelog.Commit{ID: "root", At: time.Now().UTC(), SigKeyID: "key-1", Signature: []byte("sig-bytes")}
+	if err := l.AppendCommit(ctx, "doc", c); err != nil {
+		t.Fatalf("append after migrate: %v", err)
+	}
+	got, err := l.Commits(ctx, "doc", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].SigKeyID != c.SigKeyID || string(got[0].Signature) != string(c.Signature) {
+		t.Fatalf("signature fields after migrate = %+v, want SigKeyID=%q Signature=%q", got, c.SigKeyID, c.Signature)
+	}
+}
+
+// TestSQLLog_Tips proves Tips returns the commit ids no other commit lists as
+// parent, chronological: one for a linear chain (equal to Head), one per
+// branch under a fork. Called directly on the concrete type — Tips is not yet
+// a core.Tipper the pinned core release declares (see capability.go).
+func TestSQLLog_Tips(t *testing.T) {
+	db := testDB(t)
+	l := freshLog(t, db)
+	ctx := context.Background()
+
+	if got, err := l.Tips(ctx, "missing"); err != nil || len(got) != 0 {
+		t.Fatalf("unknown doc: got %v err=%v, want empty/nil", got, err)
+	}
+
+	rec := changelog.NewRecorder("doc", l)
+	rec.Append(changelog.Change{Actor: "a", Path: "p", Kind: "put", To: "1"})
+	if _, err := rec.Commit(ctx); err != nil {
+		t.Fatalf("root: %v", err)
+	}
+	rec.Append(changelog.Change{Actor: "a", Path: "p", Kind: "put", To: "2"})
+	mid, err := rec.Commit(ctx)
+	if err != nil {
+		t.Fatalf("mid: %v", err)
+	}
+	if got, err := l.Tips(ctx, "doc"); err != nil || len(got) != 1 || got[0] != mid.ID {
+		t.Fatalf("linear tips = %v err=%v, want [%q]", got, err, mid.ID)
+	}
+
+	rec.Append(changelog.Change{Actor: "a", Path: "p", Kind: "put", To: "3a"})
+	a, err := rec.Commit(ctx, changelog.WithParent(mid.ID))
+	if err != nil {
+		t.Fatalf("childA: %v", err)
+	}
+	rec.Append(changelog.Change{Actor: "a", Path: "p", Kind: "put", To: "3b"})
+	b, err := rec.Commit(ctx, changelog.WithParent(mid.ID))
+	if err != nil {
+		t.Fatalf("childB: %v", err)
+	}
+	got, err := l.Tips(ctx, "doc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0] != a.ID || got[1] != b.ID {
+		t.Fatalf("fork tips = %v, want [%q %q] (chronological)", got, a.ID, b.ID)
 	}
 }
 

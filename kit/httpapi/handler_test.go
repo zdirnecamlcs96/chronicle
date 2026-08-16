@@ -2,6 +2,8 @@ package httpapi
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -64,6 +66,44 @@ func TestPostCommits_Changes(t *testing.T) {
 	var got changelog.Commit
 	if json.Unmarshal(rec.Body.Bytes(), &got); got.ID != "abc" {
 		t.Fatalf("body commit id = %q, want abc", got.ID)
+	}
+}
+
+// chroniclekit.WithSigner passed as a kitOpt to Handler flows straight into
+// chroniclekit.NewWithService, so a commit written via POST /commits comes
+// back signed with no extra wiring in this package.
+func TestPostCommits_Signed(t *testing.T) {
+	log := memlog.New()
+	svc := changelog.NewService(log)
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := Handler(svc, chroniclekit.WithSigner(priv, "key-1"))
+
+	rec := do(h, "POST", "/commits",
+		`{"doc_id":"d1","changes":[{"path":"status","kind":"put","to":"\"sent\""}]}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201 (%s)", rec.Code, rec.Body)
+	}
+	var got changelog.Commit
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.SigKeyID != "key-1" || len(got.Signature) == 0 {
+		t.Fatalf("commit not signed: %+v", got)
+	}
+	report, err := changelog.VerifySignatures(context.Background(), log, "d1", func(keyID string) (ed25519.PublicKey, bool) {
+		if keyID == "key-1" {
+			return pub, true
+		}
+		return nil, false
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Total != 1 || report.Valid != 1 {
+		t.Fatalf("report = %+v, want 1 valid", report)
 	}
 }
 
@@ -370,10 +410,11 @@ func TestPostCommits_Patch(t *testing.T) {
 			t.Errorf("%s sealed with no From — /explain would render nothing", ch.Path)
 		}
 	}
-	state, err := k.State(context.Background(), "d1")
+	stateAny, err := k.State(context.Background(), "d1")
 	if err != nil {
 		t.Fatal(err)
 	}
+	state := stateAny.(map[string]any)
 	if state["status"] != "open" {
 		t.Fatalf("patch not applied: %v", state)
 	}
@@ -546,6 +587,9 @@ func TestGetVerify(t *testing.T) {
 		if !got.OK || got.Commits != 2 || got.Head != c2.ID {
 			t.Fatalf("got %+v, want ok=true commits=2 head=%s", got, c2.ID)
 		}
+		if len(got.Heads) != 1 || got.Heads[0] != got.Head {
+			t.Fatalf("linear history: heads = %v, want [%s]", got.Heads, got.Head)
+		}
 	})
 
 	t.Run("empty doc", func(t *testing.T) {
@@ -567,6 +611,44 @@ func TestGetVerify(t *testing.T) {
 			t.Fatalf("want 400, got %d", rec.Code)
 		}
 	})
+}
+
+// A forked document (two children of one parent) reports every tip in heads,
+// oldest-first, while head stays the single latest-arrival tip.
+func TestGetVerify_ForkedHistory(t *testing.T) {
+	log := memlog.New()
+	ctx := context.Background()
+	rec := changelog.NewRecorder("d1", log)
+	rec.Append(changelog.Change{Actor: "a", Path: "p", Kind: "put", To: `"root"`})
+	root, err := rec.Commit(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec.Append(changelog.Change{Actor: "a", Path: "p", Kind: "put", To: `"childA"`})
+	a, err := rec.Commit(ctx, changelog.WithParent(root.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec.Append(changelog.Change{Actor: "a", Path: "p", Kind: "put", To: `"childB"`})
+	b, err := rec.Commit(ctx, changelog.WithParent(root.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	svcRec := do(Handler(changelog.NewService(log)), "GET", "/verify?doc=d1", "")
+	if svcRec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (%s)", svcRec.Code, svcRec.Body)
+	}
+	var got verifyResponse
+	if err := json.Unmarshal(svcRec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if !got.OK || got.Commits != 3 || got.Head != b.ID {
+		t.Fatalf("got %+v, want ok=true commits=3 head=%s (latest arrival)", got, b.ID)
+	}
+	if len(got.Heads) != 2 || got.Heads[0] != a.ID || got.Heads[1] != b.ID {
+		t.Fatalf("forked history: heads = %v, want [%s %s] chronological", got.Heads, a.ID, b.ID)
+	}
 }
 
 // noUnwrapService wraps a Service without exposing Unwrap, forcing

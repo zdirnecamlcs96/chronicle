@@ -21,10 +21,11 @@ func TestNew_FromLogAlone(t *testing.T) {
 	if _, err := k.RecordUpdate(ctx, "doc", nil, map[string]any{"status": "open"}); err != nil {
 		t.Fatal(err)
 	}
-	state, err := k.State(ctx, "doc")
+	stateAny, err := k.State(ctx, "doc")
 	if err != nil {
 		t.Fatal(err)
 	}
+	state := stateAny.(map[string]any)
 	if state["status"] != "open" {
 		t.Fatalf("state = %v, want status open", state)
 	}
@@ -139,6 +140,65 @@ func TestKit_StateAt_StopsAtCommit(t *testing.T) {
 	}
 	if !reflect.DeepEqual(at0, norm(t, doc0)) {
 		t.Fatalf("StateAt(c0) = %#v, want %#v", at0, norm(t, doc0))
+	}
+}
+
+// The root need not stay an object: a later RecordUpdate may replace it
+// wholesale with an array or a scalar, and the read side must replay that
+// without erroring — Reconstruct/State return whatever the chain actually
+// says, not just object roots.
+func TestKit_State_RootFlipsToArray(t *testing.T) {
+	ctx := context.Background()
+	k := NewWithService(memlog.NewService())
+	obj := map[string]any{"a": 1}
+	arr := []any{1, 2, 3}
+	c0, err := k.RecordUpdate(ctx, "doc", nil, obj)
+	if err != nil {
+		t.Fatalf("RecordUpdate create: %v", err)
+	}
+	c1, err := k.RecordUpdate(ctx, "doc", obj, arr)
+	if err != nil {
+		t.Fatalf("RecordUpdate flip: %v", err)
+	}
+
+	got, err := k.State(ctx, "doc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, norm(t, arr)) {
+		t.Fatalf("State = %#v, want array %#v", got, norm(t, arr))
+	}
+
+	at0, err := k.StateAt(ctx, "doc", c0.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(at0, norm(t, obj)) {
+		t.Fatalf("StateAt(pre-flip) = %#v, want object %#v", at0, norm(t, obj))
+	}
+	at1, err := k.StateAt(ctx, "doc", c1.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(at1, norm(t, arr)) {
+		t.Fatalf("StateAt(post-flip) = %#v, want array %#v", at1, norm(t, arr))
+	}
+}
+
+// A scalar root — the whole document is a single JSON value — round-trips
+// through RecordUpdate/State like any other root.
+func TestKit_State_ScalarRoot(t *testing.T) {
+	ctx := context.Background()
+	k := New(memlog.New())
+	if _, err := k.RecordUpdate(ctx, "doc", nil, "hello"); err != nil {
+		t.Fatalf("RecordUpdate: %v", err)
+	}
+	got, err := k.State(ctx, "doc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "hello" {
+		t.Fatalf("State = %#v, want %q", got, "hello")
 	}
 }
 
@@ -300,10 +360,11 @@ func TestKit_RecordPatch_ConcurrentWriterRecordsFork(t *testing.T) {
 	}
 
 	// Arrival-order last-write-wins: racer landed before the patch, patch wins.
-	state, err := k.State(ctx, "T1")
+	stateAny, err := k.State(ctx, "T1")
 	if err != nil {
 		t.Fatal(err)
 	}
+	state := stateAny.(map[string]any)
 	if state["status"] != "open" {
 		t.Fatalf("folded state = %v, want status open (arrival LWW)", state)
 	}

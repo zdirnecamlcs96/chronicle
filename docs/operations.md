@@ -25,6 +25,8 @@ erDiagram
         String authors
         String message
         String changes
+        String sig_key_id
+        String signature
     }
     seen {
         String idempotency_key
@@ -60,13 +62,23 @@ rebuilt or dropped without losing history.
 | `seen` | Idempotency — maps a delivery key to the commit it already produced | Yes, prunable by age |
 | `snapshots` | Read cache — materialized state pinned to a commit, so reads skip replaying from root | Yes, replay rebuilds it |
 | `annotations` | Display sidecar — readable rows frozen at seal time, stored outside the hash | Yes, reads fall back to live decoration |
+| `doc_locks` | SQL-only — one row per document, content-free (only `doc_id`), created by `Migrate`; claimed before the head read to serialize same-document appends | Yes, rows are lazily re-claimed on the next append |
 
-`commits.id` is a content hash over `(parent, message, changes)`, and `parent`
+`commits.id` is a content hash over a version tag plus `(parent, message,
+changes)`, and `parent`
 points at the previous commit — that chain is what makes tampering detectable.
 `authors` is derived from `changes` and deliberately sits outside the hash, so
 it stays queryable without widening what the seal covers. The same reasoning
 keeps `annotations` outside the preimage: a display concern must never change
 what a commit hashes to.
+
+`sig_key_id`/`signature` are nullable in SQL and default to the empty string
+in ClickHouse — both round-trip to `Commit`'s zero value, so an unsigned
+commit's row looks the same as before these columns existed. `Migrate` adds
+both to an existing `commits` table on next boot; existing rows read back
+unsigned. They sit outside the hash for the same reason as `Signature` itself
+does in Go: a signature authenticates the hash, so it cannot also be part of
+what it authenticates.
 
 Lose `seen`, `snapshots` and `annotations` and you lose idempotency, read speed
 and readable history — not history itself.
@@ -208,6 +220,10 @@ The `commits` table is **append-only**, which makes backup simple:
 
 Restoring is safe to over-deliver: re-inserting already-present commits dedups
 (SQL by unique constraint, ClickHouse by ReplacingMergeTree).
+
+Signatures (`sig_key_id`/`signature`) are commit-grade data like the rest of
+the row, not a rebuildable decoration like `snapshots`/`annotations` — losing
+them is losing part of the sealed record, not a cache miss.
 
 ## Observability
 

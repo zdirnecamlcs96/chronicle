@@ -1,8 +1,10 @@
 package chroniclediff
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"log"
 	"reflect"
 	"strconv"
 	"strings"
@@ -240,6 +242,71 @@ func TestDiff_ValueTypes_BadCanon(t *testing.T) {
 	changed := map[string]any{"amount": "20.00", "currency": "USD"}
 	if _, err := Diff(map[string]any{"price": price}, map[string]any{"price": changed}, opt); !errors.Is(err, ErrBadCanon) {
 		t.Fatalf("put: err = %v, want ErrBadCanon", err)
+	}
+}
+
+// TestDiff_EmptyStringKey_Skipped: an empty-string object key collides with
+// the root path in docmodel's path grammar, so Diff must never record one, at
+// any depth — while still diffing every other field normally and warning so
+// the caller can find the offending document.
+func TestDiff_EmptyStringKey_Skipped(t *testing.T) {
+	var buf bytes.Buffer
+	orig := log.Writer()
+	log.SetOutput(&buf)
+	defer log.SetOutput(orig)
+
+	before := map[string]any{
+		"a":   1,
+		"":    "root-secret",
+		"obj": map[string]any{"": "nested-secret", "b": 1},
+	}
+	after := map[string]any{
+		"a":   2,
+		"":    "root-secret-changed",
+		"obj": map[string]any{"": "nested-secret-changed", "b": 2},
+	}
+	cs, err := Diff(before, after)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cs) != 2 {
+		t.Fatalf("want 2 changes (a, obj.b), got %v", cs)
+	}
+	if c, ok := changeByPath(cs, "a"); !ok || c.From != "1" || c.To != "2" {
+		t.Fatalf("want put a 1->2, got %v", cs)
+	}
+	if c, ok := changeByPath(cs, "obj.b"); !ok || c.From != "1" || c.To != "2" {
+		t.Fatalf("want put obj.b 1->2, got %v", cs)
+	}
+	if _, ok := changeByPath(cs, ""); ok {
+		t.Fatalf("empty-string key must not be recorded, got %v", cs)
+	}
+
+	if n := strings.Count(buf.String(), "skipping empty-string object key"); n != 2 {
+		t.Fatalf("want 2 warnings (root + obj), got %d: %s", n, buf.String())
+	}
+}
+
+// TestDiff_EmptyStringKey_EqualValueNoWarning: the "" key is skipped on every
+// Diff, but it must warn only when the skip actually hides a difference —
+// Diff(x, x) (and any call where the "" key's value is unchanged) logs
+// nothing.
+func TestDiff_EmptyStringKey_EqualValueNoWarning(t *testing.T) {
+	var buf bytes.Buffer
+	orig := log.Writer()
+	log.SetOutput(&buf)
+	defer log.SetOutput(orig)
+
+	doc := map[string]any{"a": 1, "": "unchanged-secret"}
+	cs, err := Diff(doc, doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cs) != 0 {
+		t.Fatalf("Diff(x, x) must yield no changes, got %v", cs)
+	}
+	if buf.Len() != 0 {
+		t.Fatalf("want no warning when the \"\" key is unchanged, got: %s", buf.String())
 	}
 }
 

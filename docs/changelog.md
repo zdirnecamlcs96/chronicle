@@ -1,5 +1,13 @@
-<!-- Mirror of /docs/changelog.md — update both when cutting a release. -->
-# Changelog
+---
+title: Changelog
+permalink: /documentation/changelog/
+eyebrow: changelog
+source: changelog.md
+summary: >-
+  Every release, newest first — what was added, changed, broken, and fixed,
+  per module. Mirrors the repository's CHANGELOG.md.
+---
+<!-- Mirror of /CHANGELOG.md — update both when cutting a release. -->
 
 All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows

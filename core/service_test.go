@@ -2,6 +2,8 @@ package changelog
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"errors"
 	"testing"
 )
@@ -59,6 +61,31 @@ func TestService_IdempotencyKeyScopedToDoc(t *testing.T) {
 	got, _ := svc.Commits(ctx, "docB", 0)
 	if len(got) != 1 {
 		t.Fatalf("docB seal dropped by cross-doc key collision: stored=%d want 1", len(got))
+	}
+}
+
+func TestService_WithSignerSignsSealedCommits(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(newMemLog()).(*service).WithSigner(priv, "key-1")
+	ctx := context.Background()
+	if _, err := svc.Seal(ctx, "d1", oneChange(), "msg"); err != nil {
+		t.Fatal(err)
+	}
+	resolve := func(keyID string) (ed25519.PublicKey, bool) {
+		if keyID == "key-1" {
+			return pub, true
+		}
+		return nil, false
+	}
+	report, err := VerifySignatures(ctx, svc.(*service).log, "d1", resolve)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Total != 1 || report.Valid != 1 {
+		t.Fatalf("unexpected report: %+v", report)
 	}
 }
 

@@ -22,7 +22,19 @@ const (
 func Apply(root any, ch changelog.Change) (any, error) {
 	segs := SplitPath(ch.Path)
 	if len(segs) == 0 {
-		return nil, fmt.Errorf("empty path")
+		// Diff's only empty-Path emission is a root-level whole-value replace
+		// (differ.value's container-type-change fallback); it never emits create
+		// or delete at the root, so those stay rejected here.
+		if ch.Kind != KindPut {
+			return nil, fmt.Errorf("empty path")
+		}
+		var val any
+		if ch.To != "" {
+			if err := json.Unmarshal([]byte(ch.To), &val); err != nil {
+				return nil, err
+			}
+		}
+		return val, nil
 	}
 	switch ch.Kind {
 	case KindDelete:
@@ -39,6 +51,31 @@ func Apply(root any, ch changelog.Change) (any, error) {
 		}
 	}
 	return setIn(root, segs, val), nil
+}
+
+// ClassifySegment reports how path segment seg addresses cur, mirroring
+// setIn's vivification rule: seg is an array index when it parses as one AND
+// cur is already an array or absent (nil); any other cur treats seg as an
+// object key. arr is cur's slice when isIndex (nil otherwise); elem is the
+// value at seg — arr[idx] or cur[seg] — nil when the segment does not resolve
+// (absent container, missing key, index out of bounds).
+//
+// Both chronicleexplain's decorate and chroniclekit's Reconcile walk a path
+// through a replayed document to classify each segment this same way; this is
+// the one implementation they share.
+func ClassifySegment(cur any, seg string) (isIndex bool, arr []any, elem any) {
+	idx, isNum := AsIndex(seg)
+	a, isArr := cur.([]any)
+	if isNum && (isArr || cur == nil) {
+		if isArr && idx < len(a) {
+			return true, a, a[idx]
+		}
+		return true, a, nil
+	}
+	if m, isMap := cur.(map[string]any); isMap {
+		return false, nil, m[seg]
+	}
+	return false, nil, nil
 }
 
 // setIn sets val at segs within cur. The container kind is decided by cur's

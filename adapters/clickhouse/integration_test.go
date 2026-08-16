@@ -56,6 +56,72 @@ func TestClickHouseLog_Conformance(t *testing.T) {
 	conformance.RunAnnotatorConformance(t, newLog)
 }
 
+// TestClickHouseLog_Tips proves Tips returns the commit ids no other commit
+// lists as parent, chronological: one for a linear chain (equal to Head), one
+// per branch under a fork. Called directly on the concrete type — Tips is not
+// yet a core.Tipper the pinned core release declares (see capability.go).
+func TestClickHouseLog_Tips(t *testing.T) {
+	dsn := os.Getenv("CHANGELOG_CLICKHOUSE_TEST_DSN")
+	if dsn == "" {
+		t.Skip("set CHANGELOG_CLICKHOUSE_TEST_DSN to run")
+	}
+	db, err := sql.Open("clickhouse", dsn)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := db.PingContext(context.Background()); err != nil {
+		t.Fatalf("ping %s: %v", dsn, err)
+	}
+
+	l := changelogclickhouse.New(db)
+	ctx := context.Background()
+	if err := l.Migrate(ctx); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	for _, tbl := range []string{"commits", "seen", "snapshots"} {
+		if _, err := db.Exec("TRUNCATE TABLE IF EXISTS " + tbl); err != nil {
+			t.Fatalf("truncate %s: %v", tbl, err)
+		}
+	}
+
+	if got, err := l.Tips(ctx, "missing"); err != nil || len(got) != 0 {
+		t.Fatalf("unknown doc: got %v err=%v, want empty/nil", got, err)
+	}
+
+	rec := changelog.NewRecorder("doc", l)
+	rec.Append(changelog.Change{Actor: "a", Path: "p", Kind: "put", To: "1"})
+	if _, err := rec.Commit(ctx); err != nil {
+		t.Fatalf("root: %v", err)
+	}
+	rec.Append(changelog.Change{Actor: "a", Path: "p", Kind: "put", To: "2"})
+	mid, err := rec.Commit(ctx)
+	if err != nil {
+		t.Fatalf("mid: %v", err)
+	}
+	if got, err := l.Tips(ctx, "doc"); err != nil || len(got) != 1 || got[0] != mid.ID {
+		t.Fatalf("linear tips = %v err=%v, want [%q]", got, err, mid.ID)
+	}
+
+	rec.Append(changelog.Change{Actor: "a", Path: "p", Kind: "put", To: "3a"})
+	a, err := rec.Commit(ctx, changelog.WithParent(mid.ID))
+	if err != nil {
+		t.Fatalf("childA: %v", err)
+	}
+	rec.Append(changelog.Change{Actor: "a", Path: "p", Kind: "put", To: "3b"})
+	b, err := rec.Commit(ctx, changelog.WithParent(mid.ID))
+	if err != nil {
+		t.Fatalf("childB: %v", err)
+	}
+	got, err := l.Tips(ctx, "doc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0] != a.ID || got[1] != b.ID {
+		t.Fatalf("fork tips = %v, want [%q %q] (chronological)", got, a.ID, b.ID)
+	}
+}
+
 // TestClickHouseLog_PruneSeen proves PruneSeen deletes seen rows older than
 // the cutoff and leaves newer ones. Unlike the SQL adapter, ClickHouse
 // lightweight deletes are async mutations (see capability.go), so the test

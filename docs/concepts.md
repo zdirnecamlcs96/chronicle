@@ -29,13 +29,14 @@ properties.
 
 ## Hash chain
 
-Every commit's ID is `SHA-256(parent ID, message, changes)` — see `computeID`
-in [`core/commit.go`]({{ src }}/core/commit.go). Because the parent's ID is *inside* the
-hash, altering any historical commit changes every ID after it: the log is
-tamper-evident, the same structure git and blockchains use. Fields are
-length-framed before hashing so no two different inputs can collide by
-concatenation. This is what makes immutability *checkable* rather than
-promised.
+Every commit's ID is `SHA-256(version tag, parent ID, message, changes)` — see
+`computeID` in [`core/commit.go`]({{ src }}/core/commit.go). Because the
+parent's ID is *inside* the hash, altering any historical commit changes every
+ID after it: the log is tamper-evident, the same structure git and
+blockchains use. A fixed leading tag domain-separates the commit preimage
+from other hashed object types, and the remaining fields are length-framed
+before hashing so no two different inputs can collide by concatenation. This
+is what makes immutability *checkable* rather than promised.
 
 The commit's own time and author metadata are deliberately excluded from the
 hash, which is where chronicle diverges from git's SHA — that divergence, and
@@ -74,6 +75,102 @@ signature over it) must live elsewhere.
 *Why not a Merkle tree?* Trees buy O(log N) membership proofs — proving one
 arbitrary record to a third party. "Is my linear history intact" doesn't need
 that.
+
+`VerifyAfter`'s anchor is per document; it says nothing about a document
+whose entire history vanished, or another document the consumer never got
+around to anchoring. **Inventory checkpoints** (`ComputeCheckpoint`/
+`VerifyCheckpoint`, [`core/checkpoint.go`]({{ src }}/core/checkpoint.go))
+close that gap: `ComputeCheckpoint` scans every document via `Indexer` into a
+`Checkpoint` — one `DocState{Heads, Commits}` per document — and digests it
+with the same length-framed, domain-separated SHA-256 construction as a
+commit ID (`checkpointPreimageV1`), canonicalized (entries sorted by DocID,
+each `Heads` sorted) so the digest doesn't depend on storage return order.
+The digest commits to *both* heads and counts because they catch different
+tampering: **Heads** catch a truncated or rewritten tail — a recorded tip
+id no longer present anywhere in the document's current commits; **Commits**
+catches interior deletion — a row quietly removed from the middle of the
+chain, which leaves every head untouched and so would slip past a
+heads-only check.
+
+`VerifyCheckpoint` is deliberately not an equality check: chains legitimately
+grow after a checkpoint, so additional commits on a checkpointed document,
+and documents created since, are expected and do not fail it. What it does
+flag, per document, is a checkpointed document now entirely absent
+(`MissingDocs`), a recorded head no longer among the document's current
+commit ids (`MissingHeads`), or a current commit count lower than recorded
+(`ShrunkDocs`) — and it recomputes the checkpoint's own digest from its
+`Inventory` first, so a doctored checkpoint (edited after the fact, digest
+left stale) is caught before it is ever compared against the log.
+
+The same trust contract as `VerifyAfter`'s anchor applies, just at the scope
+of the whole inventory rather than one document: a checkpoint is only as
+trustworthy as where it is kept. `Anchorer` is deliberately not a storage
+capability — unlike `Indexer`/`TailReader`/etc., which a `Log` backend
+implements, `Anchorer` is implemented by the *consumer*, because it must
+write somewhere the database owner cannot reach (another organization's
+store, WORM storage, even a printout). An anchor stored in the same database
+it guards is decoration, not a checkpoint. Core ships the port only, no
+implementation.
+
+## Commit signing
+
+Hash chaining and checkpoints answer whether the log was edited or truncated
+after the fact; neither says who was allowed to write it. **Signing** answers
+that: `Recorder.WithSigner`/`Service.WithSigner` Ed25519-sign a commit's `ID`
+under a caller-chosen `keyID` label at seal time, storing `SigKeyID` and
+`Signature` on the `Commit` itself, both outside the hash preimage — a
+signature authenticates the hash, so it cannot also be part of what it
+authenticates. Forging a validly-chained commit then needs the signing key,
+not just database write access — the gap the threat table in
+[README.md]({{ src }}/README.md) used to mark "not detected."
+
+The signed message is the domain tag `chronicle.sig.v1\n` followed by the
+commit's `ID` (`sigMessage` in
+[`core/sign.go`]({{ src }}/core/sign.go)) — not the raw fields again. Because
+`ID` already transitively covers `(Parent, Message, Changes)`, and `Parent`
+covers everything before it, signing `ID` alone authenticates the commit's
+full content and, through the parent chain, its entire ancestry.
+
+`VerifySignatures` fetches a document's full history and classifies every
+commit into exactly one of `Unsigned`/`Valid`/`Invalid`/`UnknownKey` — a
+`SignatureReport`, report-don't-verdict like `CheckpointReport`: whether a
+document's commits must all be signed is caller policy, so an unsigned or
+invalid commit is never an error return.
+
+Key distribution is entirely the caller's. `WithSigner` accepts any
+`crypto.Signer` whose `Public()` is an `ed25519.PublicKey` (so a KMS/HSM-backed
+signer works as well as a raw `ed25519.PrivateKey`; a different key type is
+rejected at the first commit sealed under it); chronicle stores no private
+keys and ships no PKI. A `KeyResolver` looks up the public key registered
+under a commit's `SigKeyID` at verify time — rotation is minting a new
+`keyID` and pointing `WithSigner` at it going forward, and old commits keep
+verifying under whatever key their own `SigKeyID` still names.
+
+Signing is **authoritative, not best-effort** — the opposite contract from
+the [readable sidecar](#dual-audience-change-records) below. A configured
+signer that fails to sign fails the whole `Commit`/`Seal` call, restoring the
+staged changes like any other error: a silently-unsigned commit under a
+configured signer would be forgery-shaped, so there is no silent-degrade path
+here.
+
+What signing does not cover: a commit's *absence*. A hostile database owner
+can still delete a signed commit outright — that stays checkpoints +
+`Anchorer`'s job, above, not signing's.
+
+## Chain integrity vs log completeness
+
+Everything above — `Verify`, `VerifyAfter`, checkpoints — answers one
+question: was the log edited after the fact? None of it answers a different
+one: does the log agree with reality? A write that never goes through
+chronicle at all (a direct `UPDATE`, a migration script, a hotfix) leaves a
+perfectly self-consistent hash chain that simply never mentions it — nothing
+about *tamper-evidence* is violated, because nothing was tampered with.
+`kit.Reconcile` closes that gap by diffing the log's replayed state against
+the caller's live row; `kit.ReconcileSweep` does the same at the level of
+whole documents, for a row deleted (or never written) outside chronicle
+entirely. Both need the two checks side by side: chain integrity says the
+history wasn't rewritten, log completeness says the history is the whole
+story.
 
 ## Event sourcing
 

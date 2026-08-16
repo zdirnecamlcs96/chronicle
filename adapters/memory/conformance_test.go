@@ -87,3 +87,48 @@ func TestMemoryLog_Indexer(t *testing.T) {
 		t.Fatal("FindByID(missing) returned ok=true")
 	}
 }
+
+// The memory adapter implements Tips (not yet a core.Tipper the pinned core
+// release declares — called directly on the concrete type, see
+// memorylog.go). A linear chain has one tip equal to Head; a fork has one per
+// branch, chronological.
+func TestMemoryLog_Tips(t *testing.T) {
+	ctx := context.Background()
+	log := changelogmemory.New()
+
+	if got, err := log.Tips(ctx, "missing"); err != nil || len(got) != 0 {
+		t.Fatalf("unknown doc: got %v err=%v, want empty/nil", got, err)
+	}
+
+	rec := changelog.NewRecorder("doc", log)
+	rec.Append(changelog.Change{Actor: "a", Path: "p", Kind: "put", To: "1"})
+	if _, err := rec.Commit(ctx); err != nil {
+		t.Fatalf("root: %v", err)
+	}
+	rec.Append(changelog.Change{Actor: "a", Path: "p", Kind: "put", To: "2"})
+	mid, err := rec.Commit(ctx)
+	if err != nil {
+		t.Fatalf("mid: %v", err)
+	}
+	if got, err := log.Tips(ctx, "doc"); err != nil || len(got) != 1 || got[0] != mid.ID {
+		t.Fatalf("linear tips = %v err=%v, want [%q]", got, err, mid.ID)
+	}
+
+	rec.Append(changelog.Change{Actor: "a", Path: "p", Kind: "put", To: "3a"})
+	a, err := rec.Commit(ctx, changelog.WithParent(mid.ID))
+	if err != nil {
+		t.Fatalf("childA: %v", err)
+	}
+	rec.Append(changelog.Change{Actor: "a", Path: "p", Kind: "put", To: "3b"})
+	b, err := rec.Commit(ctx, changelog.WithParent(mid.ID))
+	if err != nil {
+		t.Fatalf("childB: %v", err)
+	}
+	got, err := log.Tips(ctx, "doc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0] != a.ID || got[1] != b.ID {
+		t.Fatalf("fork tips = %v, want [%q %q] (chronological)", got, a.ID, b.ID)
+	}
+}

@@ -128,17 +128,19 @@ and dedup are **optional capabilities** (pattern 4), not Log methods.
 **What.** Why the chain is hashed, and what content-addressing does and does not
 buy, is [concepts]({{ '/documentation/concepts/' | relative_url }}).
 
-**How.** `computeID` (`core/commit.go`) hashes three **length-framed** fields in a
-fixed order via `writeField` (each prefixed by its byte length as 8 big-endian
-bytes). `TestComputeID_CanonicalPreimageFormat` pins the exact byte layout;
-`TestComputeID_FieldsAreUnambiguous` proves the framing blocks a colliding
-re-split.
+**How.** `computeID` (`core/commit.go`) writes a fixed, unframed version tag
+(`commitPreimageV1`, `"chronicle.commit.v1\n"`), then hashes three
+**length-framed** fields in a fixed order via `writeField` (each prefixed by
+its byte length as 8 big-endian bytes). `TestComputeID_CanonicalPreimageFormat`
+pins the exact byte layout; `TestComputeID_FieldsAreUnambiguous` proves the
+framing blocks a colliding re-split; `TestComputeID_Golden` pins exact hex IDs
+for fixed inputs.
 
-**Invariant.** Treat the preimage (field order, length-framing, what is/isn't
-included) as a **permanent on-disk format**. Changing it reshuffles every commit
-ID and breaks every stored chain across all adapters. Do NOT add fields to the
-hash, reorder the framing, drop the length prefixes, or swap the hash/JSON
-encoders.
+**Invariant.** Treat the preimage (version tag, field order, length-framing,
+what is/isn't included) as a **permanent on-disk format**. Changing it
+reshuffles every commit ID and breaks every stored chain across all adapters.
+Do NOT add fields to the hash, reorder the framing, drop the length prefixes,
+or swap the hash/JSON encoders — bump the version tag instead.
 
 ### 4. Optional capabilities via type-assertion + Unwrap chain
 

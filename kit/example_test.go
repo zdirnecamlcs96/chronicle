@@ -51,8 +51,9 @@ func Example() {
 	}
 
 	// Point-in-time reads: HEAD and as-of the first commit.
-	now, _ := k.State(ctx, "invoice-42")
-	then, _ := k.StateAt(ctx, "invoice-42", first.ID)
+	nowAny, _ := k.State(ctx, "invoice-42")
+	thenAny, _ := k.StateAt(ctx, "invoice-42", first.ID)
+	now, then := nowAny.(map[string]any), thenAny.(map[string]any)
 	fmt.Printf("now:  status=%v total=%v\n", now["status"], now["total"])
 	fmt.Printf("then: status=%v total=%v\n", then["status"], then["total"])
 	// Output:

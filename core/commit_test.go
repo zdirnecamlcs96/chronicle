@@ -65,8 +65,9 @@ func TestComputeID_FieldsAreUnambiguous(t *testing.T) {
 
 func TestComputeID_CanonicalPreimageFormat(t *testing.T) {
 	// Pin the content-address preimage so it cannot drift accidentally: drift
-	// would silently change every commit id and break stored chains. Each field
-	// is framed with an 8-byte big-endian length prefix.
+	// would silently change every commit id and break stored chains. The
+	// preimage starts with the unframed version tag, then each field is framed
+	// with an 8-byte big-endian length prefix.
 	changes := []Change{{Actor: "a", Path: "x", Kind: "put", To: "1"}}
 	got, _ := computeID("parent-X", "msg", changes)
 
@@ -78,6 +79,7 @@ func TestComputeID_CanonicalPreimageFormat(t *testing.T) {
 		h.Write(n[:])
 		h.Write(b)
 	}
+	h.Write([]byte(commitPreimageV1))
 	writeFramed([]byte("parent-X"))
 	writeFramed([]byte("msg"))
 	writeFramed(payload)
@@ -85,6 +87,61 @@ func TestComputeID_CanonicalPreimageFormat(t *testing.T) {
 
 	if got != want {
 		t.Fatalf("preimage format drift: got %s want %s", got, want)
+	}
+}
+
+// TestComputeID_Golden pins exact commit IDs for fixed inputs. These hashes
+// are pinned forever. If this test fails, the preimage encoding changed and
+// historical commits are orphaned — bump the format version instead.
+func TestComputeID_Golden(t *testing.T) {
+	cases := []struct {
+		name    string
+		parent  string
+		message string
+		changes []Change
+		want    string
+	}{
+		{
+			name:    "root commit, empty parent",
+			parent:  "",
+			message: "init",
+			changes: []Change{{Actor: "a", Path: "x", Kind: "put", To: "1"}},
+			want:    "f22339e290aaee9ff2b6b09e242842343ffa0b13451a7e00cd89fc607fbe718e",
+		},
+		{
+			name:    "commit with parent",
+			parent:  "abc123",
+			message: "fix typo",
+			changes: []Change{{Actor: "a", Path: "x", Kind: "put", To: "2"}},
+			want:    "cf356a4d1877c59f286ebd65714ce08ef0619af17dfab1ba111a443ed98f0649",
+		},
+		{
+			name:   "multi-change commit",
+			parent: "parent-1",
+			changes: []Change{
+				{Actor: "a", Path: "x", Kind: "put", To: "1"},
+				{Actor: "b", Path: "y", Kind: "delete"},
+			},
+			want: "2ef7808711bd84eb7899f6d3f39be359f0875d33fb2be72bdfb62e325dffccb6",
+		},
+		{
+			name:    "empty message",
+			parent:  "p",
+			message: "",
+			changes: []Change{{Actor: "a", Path: "x", Kind: "put", To: "1"}},
+			want:    "a3d11f7be7bad13d54732645abb2fb479f43674936c6b24d1457f6ddd3f05cee",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := computeID(tc.parent, tc.message, tc.changes)
+			if err != nil {
+				t.Fatalf("computeID: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("golden mismatch: got %s want %s", got, tc.want)
+			}
+		})
 	}
 }
 

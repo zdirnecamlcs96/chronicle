@@ -1,7 +1,10 @@
 package conformance
 
 import (
+	"bytes"
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"testing"
@@ -162,6 +165,33 @@ func RunLogConformance(t *testing.T, newLog NewLog) {
 		}
 		if h != b.ID {
 			t.Fatalf("Head = %q, want last-arrived %q", h, b.ID)
+		}
+	})
+
+	t.Run("SignatureFieldsRoundTrip", func(t *testing.T) {
+		// SigKeyID/Signature live outside the hash preimage; a backend must still
+		// store and return them verbatim, unlike the hashed fields ChainVerifies
+		// exercises.
+		log, done := newLog(t)
+		defer done()
+		ctx := context.Background()
+		_, priv, err := ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rec := changelog.NewRecorder("doc", log).WithSigner(priv, "key-1")
+		rec.Append(changelog.Change{Actor: "a", Path: "p", Kind: "put", To: "v"})
+		sealed, err := rec.Commit(ctx)
+		if err != nil {
+			t.Fatalf("sealing signed commit: %v", err)
+		}
+		got, err := log.Commits(ctx, "doc", 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got[0].SigKeyID != sealed.SigKeyID || !bytes.Equal(got[0].Signature, sealed.Signature) {
+			t.Fatalf("signature fields did not round-trip: got SigKeyID=%q Signature=%x, want SigKeyID=%q Signature=%x",
+				got[0].SigKeyID, got[0].Signature, sealed.SigKeyID, sealed.Signature)
 		}
 	})
 
@@ -518,6 +548,90 @@ func RunAnnotatorConformance(t *testing.T, newLog NewLog) {
 		}
 		if _, err := a.LoadAnnotations(ctx, "doc", []string{"c1"}); !errors.Is(err, context.Canceled) {
 			t.Fatalf("LoadAnnotations: want context.Canceled, got %v", err)
+		}
+	})
+}
+
+// RunTipperConformance is the opt-in contract for backends that implement
+// changelog.Tipper: Tips returns the commit ids no other commit lists as
+// parent, in chronological (append) order — one for a linear chain (equal to
+// Head), one per branch under a fork — and an unknown document returns an
+// empty slice, nil error.
+func RunTipperConformance(t *testing.T, newLog NewLog) {
+	t.Helper()
+
+	tip := func(t *testing.T, log changelog.Log) changelog.Tipper {
+		t.Helper()
+		tp, ok := log.(changelog.Tipper)
+		if !ok {
+			t.Skip("backend does not implement changelog.Tipper")
+		}
+		return tp
+	}
+
+	t.Run("UnknownDocEmpty", func(t *testing.T) {
+		log, done := newLog(t)
+		defer done()
+		got, err := tip(t, log).Tips(context.Background(), "missing")
+		if err != nil || len(got) != 0 {
+			t.Fatalf("unknown doc: got %v err=%v, want empty/nil", got, err)
+		}
+	})
+
+	t.Run("LinearOneTipEqualsHead", func(t *testing.T) {
+		log, done := newLog(t)
+		defer done()
+		ctx := context.Background()
+		cs := sealN(t, log, "doc", 3)
+		got, err := tip(t, log).Tips(ctx, "doc")
+		if err != nil {
+			t.Fatal(err)
+		}
+		h, err := log.Head(ctx, "doc")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 1 || got[0] != h || got[0] != cs[2].ID {
+			t.Fatalf("linear tips = %v, want [%q] (Head)", got, h)
+		}
+	})
+
+	t.Run("ForkTwoTipsChronological", func(t *testing.T) {
+		log, done := newLog(t)
+		defer done()
+		ctx := context.Background()
+		root := sealN(t, log, "doc", 1)[0]
+
+		var tick int64 = 10 // past sealN's clock, so arrival order is unambiguous
+		rec := changelog.NewRecorder("doc", log).WithClock(func() time.Time { tick++; return time.Unix(tick, 0).UTC() })
+		rec.Append(changelog.Change{Actor: "a", Path: "p", Kind: "put", To: "childA"})
+		a, err := rec.Commit(ctx, changelog.WithParent(root.ID))
+		if err != nil {
+			t.Fatalf("first child: %v", err)
+		}
+		rec.Append(changelog.Change{Actor: "a", Path: "p", Kind: "put", To: "childB"})
+		b, err := rec.Commit(ctx, changelog.WithParent(root.ID))
+		if err != nil {
+			t.Fatalf("forking child: %v", err)
+		}
+
+		got, err := tip(t, log).Tips(ctx, "doc")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 2 || got[0] != a.ID || got[1] != b.ID {
+			t.Fatalf("fork tips = %v, want [%q %q] (chronological)", got, a.ID, b.ID)
+		}
+	})
+
+	t.Run("ContextCancellation", func(t *testing.T) {
+		log, done := newLog(t)
+		defer done()
+		tp := tip(t, log)
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if _, err := tp.Tips(ctx, "doc"); !errors.Is(err, context.Canceled) {
+			t.Fatalf("Tips: want context.Canceled, got %v", err)
 		}
 	})
 }

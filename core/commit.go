@@ -32,29 +32,45 @@ import (
 //   - Message  an optional annotation from WithMessage; IS hashed, so editing it
 //     after the fact breaks the chain.
 //   - Changes  the edits this commit seals — its diff.
+//   - SigKeyID the caller-chosen label for the key that produced Signature
+//     (NOT hashed); "" means unsigned. Set via Recorder.WithSigner.
+//   - Signature the Ed25519 signature over sigPreimageV1 || ID (NOT hashed);
+//     nil means unsigned. See VerifySignatures in sign.go.
 type Commit struct {
-	ID      string    `json:"id"`
-	Parent  string    `json:"parent"`
-	At      time.Time `json:"at"`
-	Authors []string  `json:"authors"`
-	Message string    `json:"message,omitempty"`
-	Changes []Change  `json:"changes"`
+	ID        string    `json:"id"`
+	Parent    string    `json:"parent"`
+	At        time.Time `json:"at"`
+	Authors   []string  `json:"authors"`
+	Message   string    `json:"message,omitempty"`
+	Changes   []Change  `json:"changes"`
+	SigKeyID  string    `json:"sigKeyId,omitempty"`
+	Signature []byte    `json:"signature,omitempty"`
 }
 
-// computeID is the commit's content address: SHA-256 over the parent ID, the
-// message, and the canonical JSON of the changes — deliberately NOT the commit's
-// At or Authors. Equal (parent, message, changes) always yield the same ID; any
-// difference changes it — a tamper-evident chain. Each field is length-framed
-// (see writeField) so the boundaries between parent, message, and changes are
-// unambiguous; without that framing a root commit (parent="") whose message
-// began with a real commit id would hash the same bytes as the child commit
-// holding that id as its parent, forging a collision.
+// commitPreimageV1 is the domain-separation tag written as the first, unframed
+// bytes of the commit preimage. Format tags follow the convention
+// "chronicle.<object>.v<N>\n"; any change to a preimage's encoding bumps its
+// version. See checkpointPreimageV1 in checkpoint.go for the checkpoint
+// object's tag, and sigPreimageV1 in sign.go for the commit-signature
+// object's tag.
+const commitPreimageV1 = "chronicle.commit.v1\n"
+
+// computeID is the commit's content address: SHA-256 over a fixed version tag,
+// the parent ID, the message, and the canonical JSON of the changes —
+// deliberately NOT the commit's At or Authors. Equal (parent, message, changes)
+// always yield the same ID; any difference changes it — a tamper-evident chain.
+// Each field is length-framed (see writeField) so the boundaries between
+// parent, message, and changes are unambiguous; without that framing a root
+// commit (parent="") whose message began with a real commit id would hash the
+// same bytes as the child commit holding that id as its parent, forging a
+// collision.
 func computeID(parent, message string, changes []Change) (string, error) {
 	payload, err := json.Marshal(changes)
 	if err != nil {
 		return "", err
 	}
 	h := sha256.New()
+	h.Write([]byte(commitPreimageV1))
 	writeField(h, []byte(parent))
 	writeField(h, []byte(message))
 	writeField(h, payload)

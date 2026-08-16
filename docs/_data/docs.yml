@@ -92,3 +92,10 @@
   blurb: >-
     The invariants a change must not break, the file-by-file reading order for
     the source, and what the conformance suite expects of a new backend.
+
+- section: Reference
+  name: Changelog
+  url: "/documentation/changelog/"
+  blurb: >-
+    Every release, newest first — what was added, changed, broken, and fixed,
+    per module.

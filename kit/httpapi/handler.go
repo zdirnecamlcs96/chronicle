@@ -397,7 +397,7 @@ func getState(k *chroniclekit.Kit, w http.ResponseWriter, r *http.Request) {
 	}
 	at := r.URL.Query().Get("at")
 	var (
-		state map[string]any
+		state any
 		err   error
 	)
 	if at == "" {
@@ -421,14 +421,34 @@ func getState(k *chroniclekit.Kit, w http.ResponseWriter, r *http.Request) {
 
 // verifyResponse reports changelog.VerifyChain's result for a document,
 // snake_case like every other route. Head is the newest commit id (empty when
-// the document has no commits). Error is VerifyChain's own text — chain
-// vocabulary only (hash mismatch, broken chain, fork, authors mismatch) — so
-// it discloses no backend internals.
+// the document has no commits); Heads lists every tip (more than one entry
+// means the document's history forked), oldest-tip-first. Error is
+// VerifyChain's own text — chain vocabulary only (hash mismatch, broken
+// chain, fork, authors mismatch) — so it discloses no backend internals.
 type verifyResponse struct {
-	OK      bool   `json:"ok"`
-	Commits int    `json:"commits"`
-	Head    string `json:"head,omitempty"`
-	Error   string `json:"error,omitempty"`
+	OK      bool     `json:"ok"`
+	Commits int      `json:"commits"`
+	Head    string   `json:"head,omitempty"`
+	Heads   []string `json:"heads,omitempty"`
+	Error   string   `json:"error,omitempty"`
+}
+
+// headsOf returns commits' tips — IDs no other commit in the batch names as
+// Parent — oldest-first (commits itself arrives newest-first).
+func headsOf(commits []changelog.Commit) []string {
+	isParent := make(map[string]bool, len(commits))
+	for _, c := range commits {
+		if c.Parent != "" {
+			isParent[c.Parent] = true
+		}
+	}
+	heads := make([]string, 0, 1)
+	for i := len(commits) - 1; i >= 0; i-- {
+		if c := commits[i]; !isParent[c.ID] {
+			heads = append(heads, c.ID)
+		}
+	}
+	return heads
 }
 
 func getVerify(svc changelog.Service, w http.ResponseWriter, r *http.Request) {
@@ -453,7 +473,7 @@ func getVerify(svc changelog.Service, w http.ResponseWriter, r *http.Request) {
 	if len(commits) > 0 {
 		head = commits[0].ID // newest-first
 	}
-	writeJSON(w, http.StatusOK, verifyResponse{OK: true, Commits: len(commits), Head: head})
+	writeJSON(w, http.StatusOK, verifyResponse{OK: true, Commits: len(commits), Head: head, Heads: headsOf(commits)})
 }
 
 // explainRequest asks for a document's history decorated for display. Options

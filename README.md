@@ -1,9 +1,14 @@
 # chronicle
 
-A **durable, database-agnostic changelog (audit-log) library for Go.** Buffer
-`Change`s, seal them into git-style hash-chained `Commit`s, and store them behind
-a 3-method `Log` port. Pick a backend — in-memory (dev), MySQL (transactional),
-ClickHouse (columnar) — or write your own.
+**Tamper-evident audit logging for any database** — the integrity guarantees
+of a ledger, without replacing your storage. `chronicle` buffers `Change`s,
+seals them into hash-chained `Commit`s, and stores them behind a 3-method
+`Log` port.
+
+MySQL and ClickHouse adapters ship in this repo. The storage port itself is
+just 3 methods — `AppendCommit`, `Commits`, `Head`
+([`core/log.go:22`](core/log.go#L22)) — implement it yourself and any
+database you already run can hold the history.
 
 Plain Go, organized as independently-versioned modules tied together by a
 top-level `go.work`. The **core** is standard-library only; database **adapters**
@@ -18,11 +23,19 @@ carry their own driver dependency in their own `go.mod`.
 > stays on the record. See
 > [where changes come from](https://zdirnecamlcs96.github.io/chronicle/documentation/kit/#where-changes-come-from).
 
-**Mental model:** it's intentionally git-shaped — stage edits, seal them into a
-content-addressed commit hash-chained to its parent, per-document branches. See
+**Mechanism — how the integrity guarantee works:** it's intentionally
+git-shaped — stage edits, seal them into a content-addressed commit
+hash-chained to its parent, one chain per document. See
 **[the git model](docs/model.md)** for a side-by-side with git, and
 **[CONCEPTS.md](docs/concepts.md)** for the patterns and algorithms underneath (hash
 chain, event sourcing, snapshotting, anchor verification, …).
+
+Chains are scoped per document so writes stay concurrent — independent
+documents append in parallel because each has its own chain; that's lock
+granularity, not a branching feature. There is no merge, because nothing
+needs merging: two writers racing the *same* document may instead record a
+fork (two commits sharing a parent) — a legal recorded fact, not a conflict
+to resolve.
 
 ## Status & stability
 
@@ -35,6 +48,21 @@ may still evolve.
 Running a durable backend in production? See **[OPERATIONS.md](docs/operations.md)**
 for connection-pool tuning, the ClickHouse `FINAL` cost, migrations, and
 backup/restore.
+
+## What "tamper-evident" means here
+
+The word has a specific, checkable scope — this table names exactly what
+`Verify`/`VerifyChain` catch today, and what still needs an external anchor
+or a feature that hasn't shipped:
+
+| Threat | Today |
+|---|---|
+| Modify a stored commit | **detected** — recomputed ID mismatch, `Verify` |
+| Delete a commit mid-chain | **detected** — missing parent, `Verify` |
+| Truncate the tail of a chain | **detected** when the consumer anchors an inventory checkpoint externally (`ComputeCheckpoint`/`VerifyCheckpoint` + `Anchorer`; trust contract in **[CONCEPTS.md](docs/concepts.md)**) — a per-document anchor alone (`VerifyAfter`'s pattern) also works if kept |
+| Delete an entire document's history | **detected** the same way — a missing document shows up as `MissingDocs` in the `CheckpointReport` |
+| Append forged-but-validly-chained commits (attacker with DB write access) | **detected** when commits are signed (`WithSigner`) and the verifier holds the signing keys (`VerifySignatures`) — forging one then needs the key, not just DB write access. A hostile database owner can still delete signed commits outright; that stays covered by checkpoints + `Anchorer`, above |
+| A write that bypasses chronicle entirely | not visible in the log — detected by comparing replayed state against the live row (`Reconcile`), deletion of whole rows by `ReconcileSweep` |
 
 ## Architecture — every piece
 
@@ -334,9 +362,11 @@ routes it serves:
 - `GET  /commits/{id}` — one commit by id
 - `GET  /changes?doc=&limit=` — the flattened change feed
 - `GET  /state?doc=&at=` — a document's state at HEAD, or as of commit `at`
-- `GET  /verify?doc=` — verify a document's hash chain: `{ok, commits, head?}`
-  on success, `{ok:false, commits, error}` on a broken chain. Verification
-  failing is a result, not a transport error, so the response is always `200`
+- `GET  /verify?doc=` — verify a document's hash chain: `{ok, commits, head?, heads?}`
+  on success, `{ok:false, commits, error}` on a broken chain. `head` is the
+  storage adapter's latest-arrival tip; `heads` lists every tip (more than one
+  when a document's history forked). Verification failing is a result, not a
+  transport error, so the response is always `200`
 - `POST /explain` — `{doc, limit?, options?}` → commits with `Explained` display
   decoration (see "Rendering history for humans"). `options` carries the
   read-side schema vocabulary that survives JSON — `array_keys`,

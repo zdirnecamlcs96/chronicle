@@ -85,23 +85,27 @@ An immutable, content-addressed bundle of changes chained to its parent.
 
 ```go
 type Commit struct {
-    ID      string    `json:"id"`
-    Parent  string    `json:"parent"`
-    At      time.Time `json:"at"`
-    Authors []string  `json:"authors"`
-    Message string    `json:"message,omitempty"`
-    Changes []Change  `json:"changes"`
+    ID        string    `json:"id"`
+    Parent    string    `json:"parent"`
+    At        time.Time `json:"at"`
+    Authors   []string  `json:"authors"`
+    Message   string    `json:"message,omitempty"`
+    Changes   []Change  `json:"changes"`
+    SigKeyID  string    `json:"sigKeyId,omitempty"`
+    Signature []byte    `json:"signature,omitempty"`
 }
 ```
 
 | Field | Hashed | Contract |
 |---|---|---|
-| `ID` | — | SHA-256 over `(Parent, Message, JSON-encoded Changes)`, each field length-framed with an 8-byte big-endian prefix so adjacent fields cannot be re-split into a colliding preimage. The encoding is `encoding/json` over the `Change` structs, in declaration order — adapters re-marshal from Go structs, never from stored column text, which is what makes the recomputation sound. |
+| `ID` | — | SHA-256 over a fixed leading version tag (`"chronicle.commit.v1\n"`) followed by `(Parent, Message, JSON-encoded Changes)`, each of those three fields length-framed with an 8-byte big-endian prefix so adjacent fields cannot be re-split into a colliding preimage. The encoding is `encoding/json` over the `Change` structs, in declaration order — adapters re-marshal from Go structs, never from stored column text, which is what makes the recomputation sound. |
 | `Parent` | yes | The previous commit's `ID`; `""` marks the document's root commit. |
 | `At` | **no** | When the commit was sealed. Unauthenticated convenience metadata — the authenticated timeline is each `Change.At`. |
 | `Authors` | **no** | Distinct `Change.Actor`s, sorted. Derived, so it is protected by recomputation in `VerifyChain`, not by the hash (`ErrAuthorsMismatch`). |
 | `Message` | yes | Optional annotation. Editing it after sealing breaks the chain. |
 | `Changes` | yes | The edits sealed, in staged order. |
+| `SigKeyID` | **no** | The caller-chosen label (set via `WithSigner`) for the key that produced `Signature`; `""` means unsigned. |
+| `Signature` | **no** | The Ed25519 signature over `chronicle.sig.v1\n` + `ID` — not the raw fields again, since `ID` already covers them. `nil` means unsigned. See [Signing](#signing). |
 
 **What content-addressing does and does not give you.** Equal
 `(Parent, Message, Changes)` always yields an equal `ID`. It does not give you
@@ -138,9 +142,11 @@ func NewWithService(svc changelog.Service) *Kit
 func (k *Kit) RecordUpdate(ctx, docID string, before, after any, opts ...RecordOption) (changelog.Commit, error)
 func (k *Kit) RecordChanges(ctx, docID string, changes []changelog.Change, opts ...RecordOption) (changelog.Commit, error)
 func (k *Kit) RecordPatch(ctx, docID string, ops []Operation, opts ...RecordOption) (changelog.Commit, error)
-func (k *Kit) State(ctx, docID string) (map[string]any, error)
-func (k *Kit) StateAt(ctx, docID, commitID string) (map[string]any, error)
+func (k *Kit) State(ctx, docID string) (any, error)
+func (k *Kit) StateAt(ctx, docID, commitID string) (any, error)
 func (k *Kit) CommitSnapshot(ctx, docID, commitID string) (any, error)
+func (k *Kit) Reconcile(ctx, docID string, actual any, opts ...chronicleschema.Option) (Drift, error)
+func (k *Kit) ReconcileSweep(ctx, dbDocIDs []string) (SweepReport, error)
 func (k *Kit) Service() changelog.Service
 
 func WithMessage(m string) RecordOption
@@ -160,6 +166,8 @@ func WithDiffOptions(opts ...chronicleschema.Option) RecordOption
 | `CommitSnapshot` | The commit's before-state for the smallest subtree containing every change in it. |
 | `Explain` | The document's full chain (oldest first) plus display-decorated rows per commit, with name-resolution fields (`Display`, `Element.Name`) overlaid from stored readable sidecars where present — stored names win; commits without one decorate live. |
 | `Readables` | The stored readable sidecars (`chronicleexplain.Readable`) for the given commit ids, keyed by id. `nil, nil` on a backend without the `Annotator` capability. |
+| `Reconcile` | Diffs the log-replayed state against `actual` — the caller's live database row, same projection contract as `RecordUpdate`. Proves the log is *complete*, which the hash chain does not (that proves only that it was not *edited*). `opts` excludes `WithIgnoredFields` entries from the result outright — inverted from `Explain`, where they are display-only. Carries no verdict; see [`Drift`](#drift) below. |
+| `ReconcileSweep` | The deletion half: enumerates every document the log has via `Indexer` and diffs its id set against the caller's `dbDocIDs`, reporting `SweepReport`. Errors (`ErrNoIndexer`) on a backend without `Indexer`, mirroring how `VerifyAfter` gates on `TailReader`. |
 | `Service()` | The underlying `Service`, for reads the `Kit` does not wrap. |
 
 | Option | Contract |
@@ -177,9 +185,48 @@ persistent one lands an `{"error": …}` stub so readers can see the gap. Direct
 `RecordChanges` seals have no before-state and store nothing. On a backend
 without the capability the option is a silent no-op.
 
-Either constructor detects the backend's `Snapshotter`, `TailReader`, and
-`Annotator` once, through the `Service`'s `Unwrap()` chain. A `Service`
-exposing no `Unwrap` gets full-replay reads.
+`WithSigner(signer crypto.Signer, keyID string)` forwards to the underlying
+`Service`'s own `WithSigner`, so every seal path the `Kit` owns
+(`RecordUpdate`, `RecordPatch`, and the baseline seal `WithCaptureBaseline`
+triggers) comes back signed. Last-option-wins, the same precedent
+`WithParent`/`WithCaptureBaseline` set elsewhere in this package — it
+overrides a signer already configured on a `Service` passed to
+`NewWithService`. Unlike `WithReadable`'s silent degrade above, a `Service`
+with no `WithSigner` capability is **not** a silent no-op: every subsequent
+`RecordUpdate`/`RecordPatch`/`RecordChanges` call fails immediately with
+`ErrSignerUnsupported` until the `Kit` is reconstructed over a `Service` that
+supports signing — an unsigned commit under a configured signer would be the
+same forgery-shaped failure `Recorder.Commit` itself refuses.
+
+Either constructor detects the backend's `Snapshotter`, `TailReader`,
+`Annotator`, and `Indexer` once, through the `Service`'s `Unwrap()` chain. A
+`Service` exposing no `Unwrap` gets full-replay reads and no `ReconcileSweep`.
+
+#### `Drift` and `SweepReport`
+
+```go
+type Drift struct {
+    Changes []changelog.Change
+}
+func (d Drift) Empty() bool
+
+type SweepReport struct {
+    LogOnly []string
+    DBOnly  []string
+}
+```
+
+| | Contract |
+|---|---|
+| `Drift.Changes` | Reuses `chroniclediff`'s vocabulary rather than a second differ: `From` is what the log says, `To` is what the database holds. |
+| `Drift` verdict | **None, deliberately.** A `delete` entry (log has it, row doesn't) leans "commit sealed but the write to the row failed" — a phantom record. A `create` entry (row has it, log doesn't) leans "a write bypassed chronicle entirely". A `put` entry is ambiguous — a legitimate concurrent edit and an out-of-band overwrite look identical once the log's before-value is gone — so `Reconcile` reports what differs and leaves the read to a human. |
+| `SweepReport.LogOnly` | Document ids the log has committed history for, absent from the caller's `dbDocIDs` — a deleted row, or one that never materialized after a commit landed. |
+| `SweepReport.DBOnly` | Ids in `dbDocIDs` the log has no commits for — a row written without ever going through chronicle. Both slices are sorted. |
+
+Both `Reconcile` and `ReconcileSweep` carry the same read-consistency caveat:
+run against a database read taken at the same transaction/snapshot as the log
+read, or treat the result as advisory — an in-flight legitimate write looks
+identical to drift until it lands.
 
 ### `chroniclediff.Diff`
 
@@ -189,9 +236,9 @@ func Diff(before, after any, opts ...chronicleschema.Option) ([]changelog.Change
 
 | | Contract |
 |---|---|
-| Input | Both sides JSON-normalized (marshal then unmarshal), so structs honouring `json` tags and maps diff uniformly. |
+| Input | Both sides JSON-normalized (marshal then unmarshal), so structs honouring `json` tags and maps diff uniformly. An empty-string object key is never recorded, at any depth — skipped with a logged warning, since it cannot be addressed unambiguously in the dotted path grammar. |
 | Output | `From`/`To` hold canonical-JSON leaf values; `""` means absent on that side. `Diff(x, x)` returns no changes. |
-| Root | Documents must be object- or array-rooted. A scalar root produces one change with an empty `Path`, which `Reconstruct` does not apply. |
+| Root | Any JSON root — object, array, or scalar. A scalar root, or a change to the root's container type, produces one change with an empty `Path`; kind `put` there means "replace the whole root value" and replays through `Reconstruct`/`State` like any other change. |
 
 **Array pairing** walks a chain, per array, stopping at the first hop that holds:
 
@@ -212,7 +259,7 @@ run of puts plus a tail create. Two consequences are contract, not incidental:
 ### `chronicleview`
 
 ```go
-func Reconstruct(commits []changelog.Commit) (map[string]any, error)
+func Reconstruct(commits []changelog.Commit) (any, error)
 func New(svc changelog.Service) *Reader
 ```
 
@@ -222,7 +269,7 @@ func New(svc changelog.Service) *Reader
 | `create` / `put` | Set the value at their path; intermediate containers are vivified as needed (a numeric segment makes an array). |
 | `delete` | Removes the path. A mid-array index deletion shifts later elements left. |
 | Any other `Kind` | **An error** — the replay never guesses. |
-| Non-object root | An error. |
+| Root | May end up an object, array, or scalar — a root-level `put` (empty `Path`) replaces it wholesale. `Reconstruct` returns whatever the replay produced; a caller that genuinely requires an object asserts that itself. |
 | `Reader` | Adds accelerated paths: with a `Snapshotter` + `TailReader` backend, serves from the stored snapshot plus a tail replay. Every fast path falls back to a full rebuild rather than failing. |
 
 ### `chronicleexplain.Explain`
@@ -253,7 +300,7 @@ right:
 | `WithLabels(func([]string) (string, bool))` | read | Resolves a field's label, used verbatim — the kit never translates. `ok == false` falls back to Title Case of the field name. |
 | `WithNameFields(names ...string)` | read | Fields tried in order for an element's display name. **Defaults to `{"name"}`**; calling this replaces the default. |
 | `WithNames(map[string]string)` | read (+ write under `WithReadable`) | Seeds id→name pairs for entities stored outside the document. Names found in the replayed document **win**. Never recorded in the sealed changes; `Diff` ignores it. Appends to earlier calls. Passed at **write** time on a `WithReadable` kit, the pairs freeze into the commit's readable sidecar — the only way to keep a referent's name after the referent is deleted or renamed. |
-| `WithIgnoredFields(entries ...string)` | read | Flags bookkeeping fields. A bare name matches at any depth; a dotted path matches that field and its subtree. **Recording is unaffected** — the changelog stays a full data record; `Explain` only marks the change `Bookkeeping` so a display can fold it. Appends to earlier calls. |
+| `WithIgnoredFields(entries ...string)` | read | Flags bookkeeping fields. A bare name matches at any depth; a dotted path matches that field and its subtree. **Recording is unaffected** — the changelog stays a full data record; `Explain` only marks the change `Bookkeeping` so a display can fold it. `Reconcile` inverts this: a matched entry is excluded from `Drift` outright, not merely flagged, since a bookkeeping column like `updated_at` would otherwise drift on every call. Appends to earlier calls. |
 
 Write-side options are load-bearing at record time and cannot be changed
 retroactively. Read-side options are free to change at any time and re-render
@@ -293,6 +340,7 @@ use.
 ```go
 func NewRecorder(docID string, log Log) *Recorder
 func (r *Recorder) WithClock(now func() time.Time) *Recorder
+func (r *Recorder) WithSigner(signer crypto.Signer, keyID string) *Recorder
 func (r *Recorder) Append(c Change)
 func (r *Recorder) Pending() []Change
 func (r *Recorder) Commit(ctx context.Context, opts ...CommitOption) (Commit, error)
@@ -304,6 +352,7 @@ func WithMessage(s string) CommitOption
 |---|---|
 | `NewRecorder` | Defaults to `time.Now().UTC` for timestamps. |
 | `WithClock` | Replaces the clock and returns the recorder, so it chains. A `nil` clock resets to the default. |
+| `WithSigner` | Configures Ed25519 signing under `keyID` for every commit sealed thereafter, and returns the recorder — chains like `WithClock`. `signer` may be any `crypto.Signer` whose `Public()` is an `ed25519.PublicKey` (so a KMS/HSM-backed signer works); a different key type is rejected at `Commit`, not here. |
 | `Append` | Stages one change and **stamps `c.At` from the recorder's clock**, overwriting any value supplied. |
 | `Pending` | A copy of the staged, uncommitted changes. |
 | `Commit` | Seals everything staged into one commit chained onto the document's current `Head`, and appends it to the `Log`. |
@@ -313,6 +362,7 @@ func WithMessage(s string) CommitOption
 | Nothing staged | `ErrNothingToCommit` |
 | Any error | **The staged changes are restored** — a failed commit loses nothing and the call can be retried |
 | `WithParent` set | Used as `Parent` instead of reading `Head` — an assertion, not a guard; a stale parent still commits, as a fork |
+| Signer configured | Signs the sealed `ID` before appending; a signing failure fails the call and **restores the staged changes**, like any other error — the signature is authoritative, not best-effort |
 
 When to assert: pass `WithParent` (or `Seal`'s `WithSealParent`, which
 forwards to it) whenever the writer knows which snapshot it built against —
@@ -361,6 +411,15 @@ Two asymmetries with `Recorder`: `Seal` takes `message` as a positional argument
 rather than an option, and reports an empty batch as `ErrEmptyChanges` where
 `Recorder.Commit` reports `ErrNothingToCommit`.
 
+**Signing.** `WithSigner(signer crypto.Signer, keyID string) Service` configures
+the default `service` returned by `NewService` to Ed25519-sign every commit
+`Seal` produces thereafter, forwarding to a fresh `Recorder.WithSigner` on each
+call — the same "configure once, chain onto the constructor" pattern as
+`Recorder.WithSigner` itself. It is deliberately **not part of the `Service`
+interface**: detected by type assertion, the same capability-probe pattern
+`NewService` already uses for `Indexer`/`Deduper`, so a hand-rolled `Service`
+needs no extra method to satisfy the interface.
+
 ---
 
 ## Verification
@@ -388,6 +447,146 @@ on, are in [part two](#chain-verification-on-fetched-commits).
 
 ---
 
+## Checkpoints
+
+```go
+type DocState struct {
+    DocID   string
+    Heads   []string // tip commit ids
+    Commits int       // total commits in the doc's chain
+}
+type Checkpoint struct {
+    At        time.Time // informational, NOT hashed
+    Inventory []DocState
+    Digest    string // hex SHA-256 over the canonical preimage
+}
+type ShrunkDoc struct {
+    DocID    string
+    Recorded int
+    Current  int
+}
+type CheckpointReport struct {
+    OK           bool
+    Doctored     bool
+    MissingDocs  []string
+    MissingHeads map[string][]string
+    ShrunkDocs   []ShrunkDoc
+}
+
+func ComputeCheckpoint(ctx context.Context, log Log) (Checkpoint, error)
+func VerifyCheckpoint(ctx context.Context, log Log, cp Checkpoint) (CheckpointReport, error)
+
+type Anchorer interface {
+    Anchor(ctx context.Context, cp Checkpoint) error
+    LatestAnchor(ctx context.Context) (Checkpoint, bool, error)
+}
+```
+
+`Verify`/`VerifyAfter` operate per document. A **checkpoint** is a
+point-in-time inventory across *every* document — each one's tips (`Heads`)
+and commit count (`Commits`) — digested into one hash (`Checkpoint.Digest`,
+the same length-framed, domain-separated SHA-256 construction as a commit ID,
+canonicalized — entries sorted by `DocID`, each `Heads` sorted — so a
+backend's return order never affects it). It closes what per-document
+verification cannot see on its own: a document deleted outright, or a tail
+truncated behind a stale anchor.
+
+| | `ComputeCheckpoint` | `VerifyCheckpoint` |
+|---|---|---|
+| Does | builds a fresh `Checkpoint` from the log's current state | checks a stored `Checkpoint` against the log's current state |
+| Requires | a Log with `Indexer` | a Log with `Indexer` |
+| Returns | `Checkpoint`, `error` | `CheckpointReport`, `error` — findings are report fields, never an error |
+
+**Not an equality check.** Chains legitimately grow after a checkpoint, so
+`VerifyCheckpoint` ignores documents created since and additional commits on
+a checkpointed one. Per document it flags: `MissingDocs` (no commits at all
+now — the whole history was deleted), `MissingHeads` (a recorded head id no
+longer among the document's current commit ids — truncation or rewrite), and
+`ShrunkDocs` (current commit count below recorded — interior deletion, which
+leaves `Heads` untouched and so would pass a heads-only check). It first
+recomputes the checkpoint's own digest from `Inventory`; a mismatch sets
+`Doctored` and returns immediately, before comparing anything against the
+log — a doctored checkpoint's `Inventory` cannot be trusted to check
+anything.
+
+**`Anchorer` is implemented by the consumer, not a backend** — unlike every
+interface in [optional capabilities](#optional-capabilities), which a `Log`
+adapter implements. It must persist a `Checkpoint` somewhere the database
+owner cannot reach — another organization's store, WORM storage, even a
+printout. An anchor kept in the same database it guards is decoration, not a
+checkpoint. Core ships the port only; no implementation.
+
+---
+
+## Signing
+
+```go
+type KeyResolver func(keyID string) (ed25519.PublicKey, bool)
+
+type SignatureReport struct {
+    Total      int
+    Unsigned   int
+    Valid      int
+    Invalid    int
+    UnknownKey int
+
+    InvalidIDs    []string
+    UnknownKeyIDs []string
+}
+
+func VerifySignatures(ctx context.Context, log Log, docID string, resolve KeyResolver) (SignatureReport, error)
+```
+
+Hash chaining and checkpoints answer whether the log was edited or truncated
+after the fact; neither says who was allowed to write it. `Recorder.WithSigner`/
+`Service.WithSigner` Ed25519-sign a commit's `ID` under a caller-chosen `keyID`
+label at seal time (see [`Commit`](#commit) above), so forging a
+validly-chained commit then needs the signing key, not just database write
+access.
+
+The signed message is the domain tag `chronicle.sig.v1\n` followed by the
+commit's `ID` — not the raw fields again. Because `ID` already transitively
+covers `(Parent, Message, Changes)`, and `Parent` covers everything before it,
+signing `ID` alone authenticates the commit's full content and, through the
+parent chain, its entire ancestry.
+
+`VerifySignatures` fetches a document's full history and classifies every
+commit into exactly one class:
+
+| Class | Meaning |
+|---|---|
+| `Unsigned` | `Signature` is empty — never signed. |
+| `Valid` | `SigKeyID` resolves via `KeyResolver` and the signature verifies under that key. |
+| `Invalid` | `SigKeyID` resolves but the signature does not verify — tampered bytes, or `SigKeyID` retargeted to a different (but still registered) key than the one that actually signed. |
+| `UnknownKey` | `SigKeyID` does not resolve — `resolve` returned `ok=false`, including a `SigKeyID` retargeted to a label no key is registered under. |
+
+`InvalidIDs`/`UnknownKeyIDs` hold the offending commit ids for the two
+failure classes. Report-don't-verdict, the same shape as `CheckpointReport`:
+whether a document's commits must all be signed is caller policy, so an
+unsigned or invalid commit is never an error return — `error` is reserved for
+operational failures (a `log.Commits` failure), mirroring `Verify`'s own
+result/error split.
+
+**Key distribution is entirely the caller's.** `WithSigner` accepts any
+`crypto.Signer` whose `Public()` is an `ed25519.PublicKey` (so a KMS/HSM-backed
+signer works as well as a raw `ed25519.PrivateKey`); chronicle stores no
+private keys and ships no PKI. `KeyResolver` looks up the public key
+registered under a commit's `SigKeyID` at verify time — rotation is minting a
+new `keyID` and pointing `WithSigner` at it going forward, and old commits
+keep verifying under whatever key their own `SigKeyID` still names.
+
+**Signing is authoritative, not best-effort** — the opposite contract from the
+readable sidecar ([`Kit`](#kit) above). A configured signer that fails to sign
+fails the whole `Commit`/`Seal` call, restoring the staged changes like any
+other error; a silently-unsigned commit under a configured signer would be
+forgery-shaped, so there is no silent-degrade path here.
+
+What signing does not cover: a commit's *absence*. A hostile database owner
+can still delete a signed commit outright — that stays
+[checkpoints](#checkpoints) + `Anchorer`'s job, not signing's.
+
+---
+
 ## Errors
 
 | Sentinel | Returned by | When |
@@ -398,6 +597,7 @@ on, are in [part two](#chain-verification-on-fetched-commits).
 | `chroniclediff.ErrNoIdentity` | `Diff`, under `WithStrictIdentity` | an array of objects has no usable element identity and would pair positionally |
 | `chroniclediff.ErrBadCanon` | `Diff`, when a `ValueType` matches | `Canon` returned something that is not a JSON scalar — sealing it would make the history unparseable on replay |
 | `chroniclekit.ErrUnsupportedOp` | `Kit.RecordPatch` | the patch carries an op outside `add`/`replace`/`remove` |
+| `chroniclekit.ErrSignerUnsupported` | `Kit.RecordUpdate` / `RecordPatch` / `RecordChanges` | `WithSigner` was configured but the `Kit`'s `Service` has no `WithSigner` capability |
 | `ErrHashMismatch` | the verify family | a commit's content no longer hashes to its id |
 | `ErrMissingParent` | the verify family | a commit's parent names a commit that is not in the history — forks and multiple roots are legal, an absent parent is not |
 | `ErrAuthorsMismatch` | the verify family | `Authors` is not the recomputed actor set of the changes |
@@ -572,6 +772,9 @@ type Annotator interface {
     SaveAnnotation(ctx context.Context, a Annotation) error
     LoadAnnotations(ctx context.Context, docID string, commitIDs []string) (map[string][]byte, error)
 }
+type Tipper interface {
+    Tips(ctx context.Context, docID string) ([]string, error)
+}
 ```
 
 | Capability | Contract | Absent ⇒ |
@@ -581,8 +784,9 @@ type Annotator interface {
 | `TailReader` | Commits strictly **after** `afterID`, **oldest first** (replay order — the opposite of `Commits`). `afterID == ""` means from the root. `limit <= 0` = all. An `afterID` not on the document returns `ErrNoSuchCommit`. | `VerifyAfter` errors; the kit's reader falls back to full replay |
 | `Snapshotter` | One snapshot per document, latest write wins. A **pure cache** — deleting stored snapshots is always safe. | the kit's reader falls back to full replay |
 | `Annotator` | At most one opaque annotation per `(docID, commitID)`, latest write wins, stored **outside** the hash seal; `LoadAnnotations` omits ids without one. Non-authoritative — deleting rows is always safe. | `WithReadable` is silently inert; `Kit.Readables` returns `nil, nil` and every read decorates live |
+| `Tipper` | `Tips` returns the commit ids no other commit lists as parent, **chronological (append) order**. One tip on a linear chain (equals `Head`), one per branch under a fork. Unknown or empty document ⇒ empty slice, nil error. | no fork visibility without a full fetch |
 
-All three shipped adapters implement all five: `adapters/sql` and
+All three shipped adapters implement all six: `adapters/sql` and
 `adapters/clickhouse` durably across a restart, `adapters/memory` in process
 only.
 
@@ -632,6 +836,7 @@ func RunDeduperConformance(t *testing.T, newLog NewLog)      // if you implement
 func RunTailReaderConformance(t *testing.T, newLog NewLog)   // if you implement TailReader
 func RunSnapshotterConformance(t *testing.T, newLog NewLog)  // if you implement Snapshotter
 func RunAnnotatorConformance(t *testing.T, newLog NewLog)    // if you implement Annotator
+func RunTipperConformance(t *testing.T, newLog NewLog)       // if you implement Tipper
 ```
 
 | Suite | Asserts |
@@ -641,6 +846,7 @@ func RunAnnotatorConformance(t *testing.T, newLog NewLog)    // if you implement
 | `RunTailReaderConformance` | oldest-first cursor order, `""` from the root, mid-cursor reads, `limit`, empty tail after head, `ErrNoSuchCommit` for an unknown **or foreign** cursor, context cancellation |
 | `RunSnapshotterConformance` | absent snapshot reports `ok == false`, round-trip, latest write wins, per-document isolation, context cancellation |
 | `RunAnnotatorConformance` | absent and empty id sets yield empty maps, round-trip, latest write wins, batch subset resolves exactly the stored ids, per-document isolation, context cancellation |
+| `RunTipperConformance` | unknown document returns empty/nil, a linear chain yields exactly one tip equal to `Head`, a fork yields one tip per branch in chronological order, context cancellation |
 
 The package imports only `changelog` and the standard library, so depending on it
 from your `_test.go` adds nothing to your build.

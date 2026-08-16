@@ -171,12 +171,8 @@ func decorate(cfg *chronicleschema.Config, state any, ch changelog.Change, names
 	fieldStart := 0
 	cur := state
 	for si, seg := range segs {
-		idx, isNum := docmodel.AsIndex(seg)
-		arr, isArr := cur.([]any)
-		// Mirror setIn's vivification rule: numeric segments address arrays,
-		// existing maps keep numeric keys as object keys.
-		if isNum && (isArr || cur == nil) {
-			elVal := elemAt(cur, idx)
+		isIndex, arr, elVal := docmodel.ClassifySegment(cur, seg)
+		if isIndex {
 			if elVal == nil && si == len(segs)-1 && ch.Kind == chronicleschema.KindCreate {
 				elVal = docmodel.ParseJSON(ch.To) // incoming element, not in pre-change state
 			}
@@ -203,11 +199,7 @@ func decorate(cfg *chronicleschema.Config, state any, ch changelog.Change, names
 		if cfg.Bookkeeping(seg, schema) {
 			ex.Bookkeeping = true
 		}
-		if m, isMap := cur.(map[string]any); isMap {
-			cur = m[seg]
-		} else {
-			cur = nil
-		}
+		cur = elVal
 	}
 	if field := trail[fieldStart:]; len(field) > 0 {
 		ex.Field = field
@@ -398,12 +390,4 @@ func humanScalar(v any) string {
 		return s
 	}
 	return docmodel.CanonJSON(v)
-}
-
-func elemAt(v any, idx int) any {
-	arr, ok := v.([]any)
-	if !ok || idx < 0 || idx >= len(arr) {
-		return nil
-	}
-	return arr[idx]
 }

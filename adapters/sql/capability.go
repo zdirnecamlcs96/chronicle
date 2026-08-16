@@ -14,6 +14,10 @@ import (
 
 // The SQL backend answers cross-document queries and idempotency natively, so a
 // SQL-backed server's global reads and dedup are durable (survive a restart).
+//
+// Tips (below) structurally satisfies changelog.Tipper, not yet in the
+// released core this module pins; add it to this assertion block once the
+// adapter bumps past the core release that adds it.
 var (
 	_ changelog.Indexer     = (*Log)(nil)
 	_ changelog.Deduper     = (*Log)(nil)
@@ -27,7 +31,7 @@ func (l *Log) AllCommits(ctx context.Context, limit int) ([]changelog.DocCommit,
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	q := `SELECT doc_id, id, parent, at, authors, message, changes FROM commits ORDER BY at DESC, doc_id ASC, seq DESC`
+	q := `SELECT doc_id, id, parent, at, authors, message, changes, sig_key_id, signature FROM commits ORDER BY at DESC, doc_id ASC, seq DESC`
 	args := []any{}
 	if limit > 0 {
 		q += ` LIMIT ?`
@@ -57,7 +61,7 @@ func (l *Log) FindByID(ctx context.Context, commitID string) (changelog.DocCommi
 		return changelog.DocCommit{}, false, err
 	}
 	row := l.db.QueryRowContext(ctx,
-		`SELECT doc_id, id, parent, at, authors, message, changes FROM commits WHERE id = ? LIMIT 1`, commitID)
+		`SELECT doc_id, id, parent, at, authors, message, changes, sig_key_id, signature FROM commits WHERE id = ? LIMIT 1`, commitID)
 	dc, err := scanDocCommit(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return changelog.DocCommit{}, false, nil
@@ -85,7 +89,7 @@ func (l *Log) Seen(ctx context.Context, docID, key string) (changelog.Commit, bo
 		return changelog.Commit{}, false, fmt.Errorf("changelog-sql: seen: %w", err)
 	}
 	row := l.db.QueryRowContext(ctx,
-		`SELECT doc_id, id, parent, at, authors, message, changes FROM commits WHERE doc_id = ? AND id = ? LIMIT 1`,
+		`SELECT doc_id, id, parent, at, authors, message, changes, sig_key_id, signature FROM commits WHERE doc_id = ? AND id = ? LIMIT 1`,
 		docID, commitID)
 	dc, err := scanDocCommit(row)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -136,7 +140,7 @@ func (l *Log) CommitsAfter(ctx context.Context, docID, afterID string, limit int
 			return nil, fmt.Errorf("changelog-sql: commits after: %w", err)
 		}
 	}
-	q := `SELECT id, parent, at, authors, message, changes FROM commits WHERE doc_id = ? AND seq > ? ORDER BY seq ASC`
+	q := `SELECT id, parent, at, authors, message, changes, sig_key_id, signature FROM commits WHERE doc_id = ? AND seq > ? ORDER BY seq ASC`
 	args := []any{docID, afterSeq}
 	if limit > 0 {
 		q += ` LIMIT ?`
@@ -154,6 +158,33 @@ func (l *Log) CommitsAfter(ctx context.Context, docID, afterID string, limit int
 			return nil, err
 		}
 		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// Tips returns docID's tip commit ids — those no other commit lists as
+// parent — in chronological (append) order (seq ASC). An unknown or empty
+// document returns an empty slice, nil error.
+func (l *Log) Tips(ctx context.Context, docID string) ([]string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	rows, err := l.db.QueryContext(ctx,
+		`SELECT c.id FROM commits c
+		 WHERE c.doc_id = ?
+		   AND NOT EXISTS (SELECT 1 FROM commits p WHERE p.doc_id = c.doc_id AND p.parent = c.id)
+		 ORDER BY c.seq ASC`, docID)
+	if err != nil {
+		return nil, fmt.Errorf("changelog-sql: tips: %w", err)
+	}
+	defer rows.Close()
+	out := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("changelog-sql: tips: %w", err)
+		}
+		out = append(out, id)
 	}
 	return out, rows.Err()
 }
@@ -285,10 +316,14 @@ func scanDocCommit(s scanner) (changelog.DocCommit, error) {
 	var dc changelog.DocCommit
 	var authors, changes []byte
 	var at time.Time
-	if err := s.Scan(&dc.DocID, &dc.Commit.ID, &dc.Commit.Parent, &at, &authors, &dc.Commit.Message, &changes); err != nil {
+	var sigKeyID sql.NullString
+	var signature []byte
+	if err := s.Scan(&dc.DocID, &dc.Commit.ID, &dc.Commit.Parent, &at, &authors, &dc.Commit.Message, &changes, &sigKeyID, &signature); err != nil {
 		return dc, err
 	}
 	dc.Commit.At = at.UTC()
+	dc.Commit.SigKeyID = sigKeyID.String
+	dc.Commit.Signature = signature
 	if err := json.Unmarshal(authors, &dc.Commit.Authors); err != nil {
 		return dc, fmt.Errorf("changelog-sql: unmarshal authors: %w", err)
 	}

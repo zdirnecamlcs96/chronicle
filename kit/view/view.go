@@ -67,17 +67,12 @@ func New(svc changelog.Service) *Reader {
 // change in order: put/create set the value at its path, delete removes it.
 // Intermediate containers are created as needed (numeric segments make arrays).
 // A change whose Kind is outside the kit vocabulary (create/put/delete) is an
-// error — silently guessing would corrupt the reconstruction.
-func Reconstruct(commits []changelog.Commit) (map[string]any, error) {
-	cur, err := replayInto(map[string]any{}, commits)
-	if err != nil {
-		return nil, err
-	}
-	m, ok := cur.(map[string]any)
-	if !ok {
-		return nil, fmt.Errorf("reconstruct: document root is not an object (got %T)", cur)
-	}
-	return m, nil
+// error — silently guessing would corrupt the reconstruction. The root itself
+// may end up an object, array, or scalar (a root-level put replaces it
+// wholesale) — Reconstruct returns whatever the replay produced; a caller that
+// genuinely requires an object asserts that itself.
+func Reconstruct(commits []changelog.Commit) (any, error) {
+	return replayInto(map[string]any{}, commits)
 }
 
 // replayInto applies commits (OLDEST first) on top of state, returning the
@@ -97,9 +92,11 @@ func replayInto(state any, commits []changelog.Commit) (any, error) {
 }
 
 // getAt navigates root to segs (dispatching on runtime type, so numeric object
-// keys resolve correctly), returning the value and whether it was found.
-func getAt(root map[string]any, segs []string) (any, bool) {
-	var cur any = root
+// keys resolve correctly), returning the value and whether it was found. root
+// may be an object, array, or scalar (a scalar with a non-empty segs simply
+// finds nothing).
+func getAt(root any, segs []string) (any, bool) {
+	cur := root
 	for _, s := range segs {
 		switch c := cur.(type) {
 		case []any:
@@ -152,7 +149,7 @@ func lcaPath(paths []string) string {
 // snapshot plus a tail replay instead of refetching the whole history, and
 // refreshes the snapshot afterwards — turning reads on long histories from
 // O(all commits) into O(commits since last read).
-func (r *Reader) State(ctx context.Context, docID string) (map[string]any, error) {
+func (r *Reader) State(ctx context.Context, docID string) (any, error) {
 	st, _, err := r.StateWithHead(ctx, docID)
 	return st, err
 }
@@ -161,7 +158,7 @@ func (r *Reader) State(ctx context.Context, docID string) (map[string]any, error
 // reconstructed at ("" for a document with no commits). A writer building on
 // this state passes that ID as the commit's parent (changelog.WithParent) so
 // the log records which snapshot the changes were actually diffed against.
-func (r *Reader) StateWithHead(ctx context.Context, docID string) (map[string]any, string, error) {
+func (r *Reader) StateWithHead(ctx context.Context, docID string) (any, string, error) {
 	if r.snap != nil && r.tail != nil {
 		if st, head, ok, err := r.snapshotState(ctx, docID); err != nil {
 			return nil, "", err
@@ -238,7 +235,7 @@ func (r *Reader) snapshotState(ctx context.Context, docID string) (map[string]an
 
 // saveSnapshot marshals and stores state as of commitID, best-effort (like
 // Deduper.MarkSeen: a failure only means a colder next read, never an error).
-func (r *Reader) saveSnapshot(ctx context.Context, docID, commitID string, state map[string]any) {
+func (r *Reader) saveSnapshot(ctx context.Context, docID, commitID string, state any) {
 	b, err := json.Marshal(state)
 	if err != nil {
 		return
@@ -251,7 +248,7 @@ func (r *Reader) saveSnapshot(ctx context.Context, docID, commitID string, state
 // When the backend exposes Snapshotter+TailReader and commitID is at or after
 // the stored snapshot, it replays only the tail — O(commits since snapshot);
 // older targets fall back to a full replay.
-func (r *Reader) StateAt(ctx context.Context, docID, commitID string) (map[string]any, error) {
+func (r *Reader) StateAt(ctx context.Context, docID, commitID string) (any, error) {
 	if commitID != "" && r.snap != nil && r.tail != nil {
 		if st, ok, err := r.snapshotStateAt(ctx, docID, commitID); err != nil {
 			return nil, err
@@ -306,7 +303,7 @@ func (r *Reader) snapshotStateAt(ctx context.Context, docID, commitID string) (m
 // stateUpTo replays commits (given NEWEST-first, as core returns) up to and
 // including commitID. An empty commitID yields the empty document. It errors if a
 // non-empty commitID is not present (rather than silently returning HEAD state).
-func stateUpTo(commits []changelog.Commit, commitID string) (map[string]any, error) {
+func stateUpTo(commits []changelog.Commit, commitID string) (any, error) {
 	chrono := reversed(commits)
 	upto := make([]changelog.Commit, 0, len(chrono))
 	if commitID != "" {
@@ -400,7 +397,7 @@ func (r *Reader) snapshotCommitScope(ctx context.Context, docID, commitID string
 // value at the lcaPath of the changed paths, climbing to the nearest enclosing
 // container when that scope is a scalar or absent, and the whole document when
 // the scope reaches the root.
-func lcaScope(before map[string]any, target *changelog.Commit) any {
+func lcaScope(before any, target *changelog.Commit) any {
 	paths := make([]string, len(target.Changes))
 	for i, c := range target.Changes {
 		paths[i] = c.Path

@@ -2,7 +2,9 @@ package changelog
 
 import (
 	"context"
+	"crypto"
 	"errors"
+	"sync"
 )
 
 // ErrEmptyChanges is returned by Service.Seal when no changes are supplied.
@@ -65,6 +67,26 @@ type service struct {
 	log   Log
 	index Indexer
 	idem  Deduper
+
+	mu       sync.Mutex
+	signer   crypto.Signer
+	sigKeyID string
+}
+
+// WithSigner configures the Service to Ed25519-sign every commit sealed
+// thereafter under the label keyID (forwarded to Recorder.WithSigner on
+// every Seal call), and returns the Service so callers can chain it onto
+// NewService — the same "configure once, applies to every subsequent call"
+// pattern as Recorder.WithSigner. It is not part of the Service interface —
+// detected via type assertion instead, the same capability-probe pattern
+// NewService itself uses for Indexer/Deduper — so a hand-rolled Service that
+// doesn't sign needs no extra method to satisfy the interface. Safe for
+// concurrent use, matching Recorder's own guarantee.
+func (s *service) WithSigner(signer crypto.Signer, keyID string) Service {
+	s.mu.Lock()
+	s.signer, s.sigKeyID = signer, keyID
+	s.mu.Unlock()
+	return s
 }
 
 // NewService wraps a Log with cross-document queries and producer idempotency,
@@ -113,6 +135,12 @@ func (s *service) Seal(ctx context.Context, docID string, changes []Change, mess
 		}
 	}
 	rec := NewRecorder(docID, s.log)
+	s.mu.Lock()
+	signer, sigKeyID := s.signer, s.sigKeyID
+	s.mu.Unlock()
+	if signer != nil {
+		rec.WithSigner(signer, sigKeyID)
+	}
 	for _, c := range changes {
 		rec.Append(c)
 	}

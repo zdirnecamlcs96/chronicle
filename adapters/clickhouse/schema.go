@@ -10,14 +10,19 @@ import (
 // re-inserted identical commit (same doc_id, at, id) or seen key collapses to
 // one row — the columnar equivalent of the SQL adapter's unique constraints,
 // but EVENTUAL rather than synchronous (hence no fork-prevention).
+// sig_key_id/signature default to "" (no NULL in ReplacingMergeTree without an
+// explicit Nullable wrapper): an unsigned commit's zero value round-trips as
+// the empty string / empty bytes, matching core.Commit's own zero value.
 const commitsDDL = `CREATE TABLE IF NOT EXISTS commits (
-	doc_id   String,
-	id       String,
-	parent   String,
-	at       DateTime64(6),
-	authors  String,
-	message  String,
-	changes  String
+	doc_id     String,
+	id         String,
+	parent     String,
+	at         DateTime64(6),
+	authors    String,
+	message    String,
+	changes    String,
+	sig_key_id String,
+	signature  String
 ) ENGINE = ReplacingMergeTree
 ORDER BY (doc_id, at, id)`
 
@@ -52,12 +57,17 @@ const annotationsDDL = `CREATE TABLE IF NOT EXISTS annotations (
 ) ENGINE = ReplacingMergeTree(at)
 ORDER BY (doc_id, commit_id)`
 
-// Migrate creates the schema if absent. Safe to call on every startup.
+// Migrate creates the schema if absent and upgrades an existing commits table
+// with the sig_key_id/signature columns. Safe to call on every startup.
 func (l *Log) Migrate(ctx context.Context) error {
 	for _, ddl := range []string{commitsDDL, seenDDL, snapshotsDDL, annotationsDDL} {
 		if _, err := l.db.ExecContext(ctx, ddl); err != nil {
 			return fmt.Errorf("changelog-clickhouse: migrate: %w", err)
 		}
+	}
+	if _, err := l.db.ExecContext(ctx,
+		`ALTER TABLE commits ADD COLUMN IF NOT EXISTS sig_key_id String, ADD COLUMN IF NOT EXISTS signature String`); err != nil {
+		return fmt.Errorf("changelog-clickhouse: migrate signature columns: %w", err)
 	}
 	return nil
 }

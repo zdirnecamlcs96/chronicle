@@ -2,6 +2,7 @@ package chroniclekit
 
 import (
 	"context"
+	"crypto"
 	"errors"
 	"fmt"
 
@@ -21,14 +22,26 @@ import (
 // so both are a 4xx, not a 5xx.
 var ErrUnsupportedOp = errors.New("chroniclekit: unsupported JSON Patch op")
 
+// ErrSignerUnsupported is returned by every Record*/RecordChanges call when
+// WithSigner was configured but the Kit's Service has no WithSigner
+// capability. Unlike WithReadable's silent degrade (best-effort display
+// metadata), a signature is authoritative — a caller who asked for signing
+// and got silently unsigned commits back would be in the exact forgery-shaped
+// failure core's Recorder refuses (it fails the Commit on a signing error for
+// the same reason). Loud and immediate, not just at first Seal: WithSigner
+// cannot itself fail (Option is func(*Kit), no error return), so this is the
+// earliest point the current constructor shape allows catching it.
+var ErrSignerUnsupported = errors.New("chroniclekit: WithSigner: service does not support signing")
+
 // Kit is the one-stop facade over a changelog backend: produce changes, seal
 // them, and reconstruct/render on read. It is adapter-agnostic — the caller
 // injects the Log (and thus picks the backend).
 type Kit struct {
-	svc      changelog.Service
-	r        *chronicleview.Reader
-	ann      changelog.Annotator // nil when the backend lacks the capability
-	readable bool
+	svc       changelog.Service
+	r         *chronicleview.Reader
+	ann       changelog.Annotator // nil when the backend lacks the capability
+	readable  bool
+	signerErr error // set by WithSigner when svc lacks the signing capability
 }
 
 // Option configures a Kit at construction.
@@ -43,6 +56,34 @@ type Option func(*Kit)
 // the Annotator capability the option is a silent no-op.
 func WithReadable() Option {
 	return func(k *Kit) { k.readable = true }
+}
+
+// WithSigner configures the Kit's Service to Ed25519-sign every commit sealed
+// thereafter under keyID, so every seal path the Kit owns (RecordUpdate,
+// RecordPatch, and the baseline seal WithCaptureBaseline triggers) comes back
+// signed. It forwards to changelog.Service's own WithSigner on the Service
+// the Kit holds — New's freshly built changelog.NewService(log), or the
+// Service NewWithService was given. If that Service already carries a signer
+// (e.g. a caller-built Service passed to NewWithService), this option
+// overrides it, matching the last-option-wins precedent WithParent/
+// WithCaptureBaseline already use elsewhere in this package.
+//
+// A Service with no WithSigner capability (a hand-rolled mock) is NOT a
+// silent no-op: unlike WithReadable, an unsigned commit under a configured
+// signer would be forgery-shaped, so every subsequent Record*/RecordChanges
+// call fails loudly with ErrSignerUnsupported until the Kit is reconstructed
+// over a Service that supports it.
+func WithSigner(signer crypto.Signer, keyID string) Option {
+	return func(k *Kit) {
+		s, ok := k.svc.(interface {
+			WithSigner(crypto.Signer, string) changelog.Service
+		})
+		if !ok {
+			k.signerErr = ErrSignerUnsupported
+			return
+		}
+		k.svc = s.WithSigner(signer, keyID)
+	}
 }
 
 // New returns a Kit over any Log, building the changelog.Service it needs. This
@@ -91,8 +132,10 @@ func annotatorFor(svc changelog.Service) changelog.Annotator {
 // Service returns the underlying Service (for reads the Kit does not wrap).
 func (k *Kit) Service() changelog.Service { return k.svc }
 
-// State reconstructs docID's current state at HEAD.
-func (k *Kit) State(ctx context.Context, docID string) (map[string]any, error) {
+// State reconstructs docID's current state at HEAD. The root is an object,
+// array, or scalar depending on what was last sealed there — a caller that
+// requires an object asserts that itself.
+func (k *Kit) State(ctx context.Context, docID string) (any, error) {
 	return k.r.State(ctx, docID)
 }
 
@@ -100,12 +143,12 @@ func (k *Kit) State(ctx context.Context, docID string) (map[string]any, error) {
 // at ("" for an empty document). Pass that ID to WithParent when recording an
 // edit built on this state, so the commit records the snapshot it was actually
 // diffed against.
-func (k *Kit) StateWithHead(ctx context.Context, docID string) (map[string]any, string, error) {
+func (k *Kit) StateWithHead(ctx context.Context, docID string) (any, string, error) {
 	return k.r.StateWithHead(ctx, docID)
 }
 
 // StateAt reconstructs docID's state as of (and including) commitID.
-func (k *Kit) StateAt(ctx context.Context, docID, commitID string) (map[string]any, error) {
+func (k *Kit) StateAt(ctx context.Context, docID, commitID string) (any, error) {
 	return k.r.StateAt(ctx, docID, commitID)
 }
 
@@ -308,6 +351,9 @@ func (k *Kit) RecordPatch(ctx context.Context, docID string, ops []Operation, op
 
 // RecordChanges seals pre-built Changes as one commit.
 func (k *Kit) RecordChanges(ctx context.Context, docID string, changes []changelog.Change, opts ...RecordOption) (changelog.Commit, error) {
+	if k.signerErr != nil {
+		return changelog.Commit{}, k.signerErr
+	}
 	var cfg recordConfig
 	for _, o := range opts {
 		o(&cfg)

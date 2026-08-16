@@ -2,7 +2,9 @@ package changelog
 
 import (
 	"context"
+	"crypto"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 )
@@ -19,8 +21,10 @@ type Recorder struct {
 	log   Log
 	now   func() time.Time
 
-	mu      sync.Mutex
-	pending []Change
+	mu       sync.Mutex
+	pending  []Change
+	signer   crypto.Signer
+	sigKeyID string
 }
 
 // NewRecorder returns a Recorder that records the history of docID into log.
@@ -38,6 +42,21 @@ func (r *Recorder) WithClock(now func() time.Time) *Recorder {
 	}
 	r.mu.Lock()
 	r.now = now
+	r.mu.Unlock()
+	return r
+}
+
+// WithSigner configures the Recorder to Ed25519-sign every commit sealed
+// thereafter under the label keyID (stored as Commit.SigKeyID), and returns
+// the Recorder so callers can chain it onto NewRecorder — the same
+// "configure once, applies to every subsequent Commit" pattern as WithClock.
+// signer may be any crypto.Signer whose Public() is an ed25519.PublicKey, so
+// a KMS/HSM-backed signer works as well as a raw ed25519.PrivateKey; a
+// signer of a different key type is rejected with an error from Commit, not
+// here, so WithSigner itself never fails.
+func (r *Recorder) WithSigner(signer crypto.Signer, keyID string) *Recorder {
+	r.mu.Lock()
+	r.signer, r.sigKeyID = signer, keyID
 	r.mu.Unlock()
 	return r
 }
@@ -91,7 +110,11 @@ func WithParent(id string) CommitOption {
 // it to the Log — `git commit`. It returns ErrNothingToCommit when nothing is
 // staged. On any error the staged Changes are restored, so nothing is lost.
 // Options (e.g. WithMessage) are variadic and additive — existing callers
-// `rec.Commit(ctx)` continue to work.
+// `rec.Commit(ctx)` continue to work. When WithSigner is configured, Commit
+// signs the sealed ID before appending; a signing failure fails the Commit
+// call, restoring the staged Changes like any other error — unlike the
+// best-effort readable sidecar, a Signature is authoritative, so a silently
+// unsigned commit under a configured signer would be forgery-shaped.
 func (r *Recorder) Commit(ctx context.Context, opts ...CommitOption) (Commit, error) {
 	var co commitOpts
 	for _, opt := range opts {
@@ -123,14 +146,29 @@ func (r *Recorder) Commit(ctx context.Context, opts ...CommitOption) (Commit, er
 	}
 	r.mu.Lock()
 	now := r.now()
+	signer, sigKeyID := r.signer, r.sigKeyID
 	r.mu.Unlock()
+
+	var sig []byte
+	if signer == nil {
+		sigKeyID = ""
+	} else {
+		sig, err = signCommit(signer, id)
+		if err != nil {
+			r.restore(pending)
+			return Commit{}, fmt.Errorf("changelog: sign commit: %w", err)
+		}
+	}
+
 	c := Commit{
-		ID:      id,
-		Parent:  parent,
-		At:      now,
-		Authors: distinctAuthors(pending),
-		Message: co.message,
-		Changes: pending,
+		ID:        id,
+		Parent:    parent,
+		At:        now,
+		Authors:   distinctAuthors(pending),
+		Message:   co.message,
+		Changes:   pending,
+		SigKeyID:  sigKeyID,
+		Signature: sig,
 	}
 	if err := r.log.AppendCommit(ctx, r.docID, c); err != nil {
 		r.restore(pending)

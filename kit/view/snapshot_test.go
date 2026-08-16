@@ -172,10 +172,11 @@ func TestStateAt_TargetBeforeSnapshotFallsBack(t *testing.T) {
 		t.Fatal(err)
 	}
 	// c1 predates the snapshot: the probe misses and the full path answers.
-	st, err := r.StateAt(ctx, "doc", c1.ID)
+	stAny, err := r.StateAt(ctx, "doc", c1.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
+	st := stAny.(map[string]any)
 	if st["a"] != float64(1) {
 		t.Fatalf("state = %#v, want a=1", st)
 	}
@@ -224,10 +225,11 @@ func TestState_CorruptSnapshotSelfHeals(t *testing.T) {
 	if err := log.SaveSnapshot(ctx, changelog.Snapshot{DocID: "doc", CommitID: "whatever", State: []byte("{not json")}); err != nil {
 		t.Fatal(err)
 	}
-	st, err := r.State(ctx, "doc")
+	stAny, err := r.State(ctx, "doc")
 	if err != nil {
 		t.Fatalf("corrupt snapshot must fall back, got %v", err)
 	}
+	st := stAny.(map[string]any)
 	if st["a"] != float64(1) {
 		t.Fatalf("state = %#v", st)
 	}
@@ -242,10 +244,11 @@ func TestState_OrphanedCursorRebuilds(t *testing.T) {
 	if err := log.SaveSnapshot(ctx, changelog.Snapshot{DocID: "doc", CommitID: "gone", State: []byte(`{"stale":true}`)}); err != nil {
 		t.Fatal(err)
 	}
-	st, err := r.State(ctx, "doc")
+	stAny, err := r.State(ctx, "doc")
 	if err != nil {
 		t.Fatalf("orphaned cursor must fall back, got %v", err)
 	}
+	st := stAny.(map[string]any)
 	if _, stale := st["stale"]; stale || st["a"] != float64(1) {
 		t.Fatalf("state = %#v", st)
 	}
@@ -259,7 +262,8 @@ func TestState_NoCapabilitiesStillWorks(t *testing.T) {
 		t.Fatal("opaque service must yield no capabilities")
 	}
 	seal(t, svc, "doc", put("a", "1"))
-	st, err := r.State(ctx, "doc")
+	stAny, err := r.State(ctx, "doc")
+	st, _ := stAny.(map[string]any)
 	if err != nil || st["a"] != float64(1) {
 		t.Fatalf("state=%#v err=%v", st, err)
 	}

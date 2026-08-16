@@ -232,6 +232,33 @@ func (m *Log) AllCommits(ctx context.Context, limit int) ([]changelog.DocCommit,
 	return out, nil
 }
 
+// Tips returns docID's tip commit ids — those no other commit lists as
+// parent — in chronological (append) order. An unknown or empty document
+// returns an empty slice, nil error.
+//
+// ponytail: structurally satisfies changelog.Tipper (not yet in the released
+// core this module pins); add `_ changelog.Tipper = (*Log)(nil)` once the
+// adapter bumps past the core release that adds it.
+func (m *Log) Tips(ctx context.Context, docID string) ([]string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	src := m.commits[docID]
+	isParent := make(map[string]bool, len(src))
+	for _, c := range src {
+		isParent[c.Parent] = true
+	}
+	out := []string{}
+	for _, c := range src {
+		if !isParent[c.ID] {
+			out = append(out, c.ID)
+		}
+	}
+	return out, nil
+}
+
 // FindByID returns the commit with the given id and its document; ok is false if
 // none. Documents are scanned in id order, so a content hash shared by two
 // documents resolves deterministically (first by document id wins).

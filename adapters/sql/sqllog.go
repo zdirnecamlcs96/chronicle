@@ -75,11 +75,15 @@ func (l *Log) Close() error { return l.db.Close() }
 
 var _ changelog.Log = (*Log)(nil)
 
-// AppendCommit stores one commit. The transaction's SELECT ... FOR UPDATE on
-// the head row serializes seq assignment per document; the commit's Parent is
-// stored verbatim — a writer building on a non-tip parent records a fork, not
-// an error. Re-appending an identical commit (same document, same content-hash
-// id) is a no-op, so an at-least-once replay lands exactly one row.
+// AppendCommit stores one commit. The transaction claims a per-document lock
+// row before reading the head, serializing seq assignment per document; the
+// head read itself is a plain SELECT (no FOR UPDATE) since the doc_locks
+// claim already provides the mutual exclusion — a locking read would gap-lock
+// the commits index and could deadlock across unrelated documents instead.
+// The commit's Parent is stored verbatim — a writer building on a non-tip
+// parent records a fork, not an error. Re-appending an identical commit (same
+// document, same content-hash id) is a no-op, so an at-least-once replay
+// lands exactly one row.
 func (l *Log) AppendCommit(ctx context.Context, docID string, c changelog.Commit) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -96,11 +100,14 @@ func (l *Log) AppendCommit(ctx context.Context, docID string, c changelog.Commit
 		return fmt.Errorf("changelog-sql: marshal changes: %w", err)
 	}
 
-	// Two writers on an EMPTY document race to seq 1: both see no head row, and
-	// the FOR UPDATE gap lock cannot order inserts under it, so the loser hits
-	// the (doc_id, seq) PRIMARY KEY — or an InnoDB deadlock — and re-derives a
-	// fresh seq. ponytail: 5 attempts, matching the writers a gap-lock pileup
-	// realistically holds; raise if a hammer test ever exhausts it.
+	// The per-document lock row serializes seq assignment, and the head read
+	// below takes no gap lock (see appendOnce), so the only remaining deadlock
+	// surface is two writers claiming the doc_locks row for the SAME
+	// never-before-seen document for the first time: both find no row and both
+	// attempt to insert it (InnoDB's insert-intention locking can pick either as
+	// the deadlock victim). ponytail: 5 attempts, matching the writers a
+	// first-claim pileup realistically holds; raise if a hammer test ever
+	// exhausts it.
 	const maxAttempts = 5
 	for attempt := 0; ; attempt++ {
 		err := l.appendOnce(ctx, docID, c, authors, changes)
@@ -127,9 +134,25 @@ func (l *Log) appendOnce(ctx context.Context, docID string, c changelog.Commit, 
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	// Claim the document's lock row first: this is a plain-record lock (an
+	// existing row, or a fresh key no other document shares), never a gap
+	// lock, so concurrent appenders to the same document queue behind it one
+	// at a time instead of racing the head read below.
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO doc_locks (doc_id) VALUES (?) ON DUPLICATE KEY UPDATE doc_id = doc_id`,
+		docID); err != nil {
+		return fmt.Errorf("changelog-sql: claim: %w", err)
+	}
+
+	// Plain read, no FOR UPDATE: the doc_locks claim above already serializes
+	// same-document writers, so by the time we reach here any prior writer for
+	// this doc has committed. A locking read would additionally gap-lock the
+	// commits PRIMARY KEY range for this doc_id, which for a brand-new document
+	// can overlap the gap another brand-new (but different) doc_id locks too —
+	// that cross-document gap-lock overlap is what deadlocked their INSERTs.
 	var headSeq uint64
 	err = tx.QueryRowContext(ctx,
-		`SELECT seq FROM commits WHERE doc_id = ? ORDER BY seq DESC LIMIT 1 FOR UPDATE`,
+		`SELECT seq FROM commits WHERE doc_id = ? ORDER BY seq DESC LIMIT 1`,
 		docID).Scan(&headSeq)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
@@ -138,10 +161,19 @@ func (l *Log) appendOnce(ctx context.Context, docID string, c changelog.Commit, 
 		return fmt.Errorf("changelog-sql: head: %w", err)
 	}
 
+	// NULL, not "", marks unsigned — scanCommit maps NULL back to the zero
+	// value, so a signed commit can never be confused with an unsigned one.
+	var sigKeyID, signature any
+	if c.SigKeyID != "" {
+		sigKeyID = c.SigKeyID
+	}
+	if len(c.Signature) > 0 {
+		signature = c.Signature
+	}
 	_, err = tx.ExecContext(ctx,
-		`INSERT INTO commits (doc_id, seq, id, parent, at, authors, message, changes)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		docID, headSeq+1, c.ID, c.Parent, c.At.UTC(), authors, c.Message, changes)
+		`INSERT INTO commits (doc_id, seq, id, parent, at, authors, message, changes, sig_key_id, signature)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		docID, headSeq+1, c.ID, c.Parent, c.At.UTC(), authors, c.Message, changes, sigKeyID, signature)
 	if err != nil {
 		return fmt.Errorf("changelog-sql: insert: %w", err)
 	}
@@ -173,7 +205,7 @@ func (l *Log) Commits(ctx context.Context, docID string, limit int) ([]changelog
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	q := `SELECT id, parent, at, authors, message, changes FROM commits WHERE doc_id = ? ORDER BY seq DESC`
+	q := `SELECT id, parent, at, authors, message, changes, sig_key_id, signature FROM commits WHERE doc_id = ? ORDER BY seq DESC`
 	args := []any{docID}
 	if limit > 0 {
 		q += ` LIMIT ?`
@@ -202,10 +234,14 @@ func scanCommit(s scanner) (changelog.Commit, error) {
 	var c changelog.Commit
 	var authors, changes []byte
 	var at time.Time
-	if err := s.Scan(&c.ID, &c.Parent, &at, &authors, &c.Message, &changes); err != nil {
+	var sigKeyID sql.NullString
+	var signature []byte
+	if err := s.Scan(&c.ID, &c.Parent, &at, &authors, &c.Message, &changes, &sigKeyID, &signature); err != nil {
 		return c, err
 	}
 	c.At = at.UTC()
+	c.SigKeyID = sigKeyID.String
+	c.Signature = signature
 	if err := json.Unmarshal(authors, &c.Authors); err != nil {
 		return c, fmt.Errorf("changelog-sql: unmarshal authors: %w", err)
 	}

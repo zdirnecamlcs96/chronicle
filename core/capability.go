@@ -103,3 +103,16 @@ type Deduper interface {
 	// wins: it is a no-op if (docID, key) already exists.
 	MarkSeen(ctx context.Context, docID, key string, c Commit) error
 }
+
+// Tipper is an optional capability for backends that report a document's
+// tips — the commits no other commit lists as parent — without a full fetch.
+// A single linear chain has exactly one tip, equal to Head; a forked history
+// has one per branch. It is what lets a caller detect and enumerate forks
+// (e.g. to merge or flag them) without replaying the whole document.
+type Tipper interface {
+	// Tips returns docID's tip commit ids in chronological (append) order — a
+	// linear chain yields exactly one, equal to Head; a forked history yields one
+	// per branch. An unknown or empty document returns an empty slice, nil error
+	// (matching Commits).
+	Tips(ctx context.Context, docID string) ([]string, error)
+}

@@ -76,8 +76,8 @@ func (l *Log) AppendCommit(ctx context.Context, docID string, c changelog.Commit
 		return fmt.Errorf("changelog-clickhouse: marshal changes: %w", err)
 	}
 	_, err = l.db.ExecContext(ctx,
-		`INSERT INTO commits (doc_id, id, parent, at, authors, message, changes) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		docID, c.ID, c.Parent, c.At.UTC(), string(authors), c.Message, string(changes))
+		`INSERT INTO commits (doc_id, id, parent, at, authors, message, changes, sig_key_id, signature) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		docID, c.ID, c.Parent, c.At.UTC(), string(authors), c.Message, string(changes), c.SigKeyID, string(c.Signature))
 	if err != nil {
 		return fmt.Errorf("changelog-clickhouse: insert: %w", err)
 	}
@@ -106,7 +106,7 @@ func (l *Log) Commits(ctx context.Context, docID string, limit int) ([]changelog
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	q := `SELECT id, parent, at, authors, message, changes FROM commits FINAL WHERE doc_id = ? ORDER BY at DESC, id DESC`
+	q := `SELECT id, parent, at, authors, message, changes, sig_key_id, signature FROM commits FINAL WHERE doc_id = ? ORDER BY at DESC, id DESC`
 	args := []any{docID}
 	if limit > 0 {
 		q += ` LIMIT ?`
@@ -132,12 +132,16 @@ type scanner interface{ Scan(dest ...any) error }
 
 func scanCommit(s scanner) (changelog.Commit, error) {
 	var c changelog.Commit
-	var authors, changes string
+	var authors, changes, sigKeyID, signature string
 	var at time.Time
-	if err := s.Scan(&c.ID, &c.Parent, &at, &authors, &c.Message, &changes); err != nil {
+	if err := s.Scan(&c.ID, &c.Parent, &at, &authors, &c.Message, &changes, &sigKeyID, &signature); err != nil {
 		return c, err
 	}
 	c.At = at.UTC()
+	c.SigKeyID = sigKeyID
+	if signature != "" {
+		c.Signature = []byte(signature)
+	}
 	if err := json.Unmarshal([]byte(authors), &c.Authors); err != nil {
 		return c, fmt.Errorf("changelog-clickhouse: unmarshal authors: %w", err)
 	}

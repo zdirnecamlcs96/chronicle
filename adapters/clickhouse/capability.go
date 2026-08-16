@@ -20,12 +20,44 @@ var (
 	_ changelog.Annotator   = (*Log)(nil)
 )
 
+// Tips (below) structurally satisfies changelog.Tipper, not yet in the
+// released core this module pins; add it to the assertion block above once
+// the adapter bumps past the core release that adds it.
+
+// Tips returns docID's tip commit ids — those no other commit lists as
+// parent — in chronological (append) order (at ASC, id ASC, mirroring
+// Commits/CommitsAfter). An unknown or empty document returns an empty slice,
+// nil error.
+func (l *Log) Tips(ctx context.Context, docID string) ([]string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	rows, err := l.db.QueryContext(ctx,
+		`SELECT id FROM commits FINAL
+		 WHERE doc_id = ?
+		   AND id NOT IN (SELECT parent FROM commits FINAL WHERE doc_id = ?)
+		 ORDER BY at ASC, id ASC`, docID, docID)
+	if err != nil {
+		return nil, fmt.Errorf("changelog-clickhouse: tips: %w", err)
+	}
+	defer rows.Close()
+	out := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("changelog-clickhouse: tips: %w", err)
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
 // AllCommits returns commits across all documents, newest first.
 func (l *Log) AllCommits(ctx context.Context, limit int) ([]changelog.DocCommit, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	q := `SELECT doc_id, id, parent, at, authors, message, changes FROM commits FINAL ORDER BY at DESC, doc_id, id`
+	q := `SELECT doc_id, id, parent, at, authors, message, changes, sig_key_id, signature FROM commits FINAL ORDER BY at DESC, doc_id, id`
 	args := []any{}
 	if limit > 0 {
 		q += ` LIMIT ?`
@@ -53,7 +85,7 @@ func (l *Log) FindByID(ctx context.Context, commitID string) (changelog.DocCommi
 		return changelog.DocCommit{}, false, err
 	}
 	row := l.db.QueryRowContext(ctx,
-		`SELECT doc_id, id, parent, at, authors, message, changes FROM commits FINAL WHERE id = ? LIMIT 1`, commitID)
+		`SELECT doc_id, id, parent, at, authors, message, changes, sig_key_id, signature FROM commits FINAL WHERE id = ? LIMIT 1`, commitID)
 	dc, err := scanDocCommit(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return changelog.DocCommit{}, false, nil
@@ -81,7 +113,7 @@ func (l *Log) Seen(ctx context.Context, docID, key string) (changelog.Commit, bo
 		return changelog.Commit{}, false, fmt.Errorf("changelog-clickhouse: seen: %w", err)
 	}
 	row := l.db.QueryRowContext(ctx,
-		`SELECT doc_id, id, parent, at, authors, message, changes FROM commits FINAL WHERE doc_id = ? AND id = ? LIMIT 1`,
+		`SELECT doc_id, id, parent, at, authors, message, changes, sig_key_id, signature FROM commits FINAL WHERE doc_id = ? AND id = ? LIMIT 1`,
 		docID, commitID)
 	dc, err := scanDocCommit(row)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -116,7 +148,7 @@ func (l *Log) CommitsAfter(ctx context.Context, docID, afterID string, limit int
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	q := `SELECT id, parent, at, authors, message, changes FROM commits FINAL WHERE doc_id = ?`
+	q := `SELECT id, parent, at, authors, message, changes, sig_key_id, signature FROM commits FINAL WHERE doc_id = ?`
 	args := []any{docID}
 	if afterID != "" {
 		var at time.Time
@@ -252,12 +284,16 @@ func (l *Log) LoadAnnotations(ctx context.Context, docID string, commitIDs []str
 
 func scanDocCommit(s scanner) (changelog.DocCommit, error) {
 	var dc changelog.DocCommit
-	var authors, changes string
+	var authors, changes, sigKeyID, signature string
 	var at time.Time
-	if err := s.Scan(&dc.DocID, &dc.Commit.ID, &dc.Commit.Parent, &at, &authors, &dc.Commit.Message, &changes); err != nil {
+	if err := s.Scan(&dc.DocID, &dc.Commit.ID, &dc.Commit.Parent, &at, &authors, &dc.Commit.Message, &changes, &sigKeyID, &signature); err != nil {
 		return dc, err
 	}
 	dc.Commit.At = at.UTC()
+	dc.Commit.SigKeyID = sigKeyID
+	if signature != "" {
+		dc.Commit.Signature = []byte(signature)
+	}
 	if err := json.Unmarshal([]byte(authors), &dc.Commit.Authors); err != nil {
 		return dc, fmt.Errorf("changelog-clickhouse: unmarshal authors: %w", err)
 	}
