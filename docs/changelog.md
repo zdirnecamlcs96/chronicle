@@ -17,7 +17,28 @@ Modules are versioned in lockstep. A single version covers every module and is
 published as per-module Go tags: `core/vX.Y.Z`, `adapters/memory/vX.Y.Z`,
 `adapters/sql/vX.Y.Z`, `adapters/clickhouse/vX.Y.Z`, and `kit/vX.Y.Z`.
 
-## [0.5.0] - Unreleased
+## [0.5.1] - 2026-08-27
+
+Tags all modules in lockstep; only `adapters/clickhouse` changes. No core
+requirement bump — core is unchanged, so the `core v0.5.0` requirement in
+kit and the adapters stays valid.
+
+### Changed
+- **`adapters/clickhouse`**: **BREAKING** — `New` and `Open` now require a
+  caller-declared table-name prefix and return an error when it is missing
+  or not a plain identifier (`^[A-Za-z_][A-Za-z0-9_]*$`). The four tables
+  are derived from it as `<prefix>_changelog_commits`,
+  `<prefix>_changelog_seen`, `<prefix>_changelog_snapshots`, and
+  `<prefix>_changelog_annotations`; a trailing underscore on the prefix is
+  stripped, so `"myapp"` and `"myapp_"` are equivalent. New signatures:
+  `New(db *sql.DB, prefix string) (*Log, error)` and
+  `Open(ctx context.Context, dsn string, prefix string, opts ...Option)
+  (*Log, error)`. An existing deployment keeps its history by renaming the
+  old fixed-name tables before upgrading, e.g.
+  `RENAME TABLE commits TO myapp_changelog_commits` (likewise `seen`,
+  `snapshots`, `annotations`) for prefix `"myapp"`.
+
+## [0.5.0] - 2026-08-17
 
 Ships two-phase like 0.4.0: `core/v0.5.0` first, kit and adapter tags after
 their core requirement bumps. The preimage change below is why the order
