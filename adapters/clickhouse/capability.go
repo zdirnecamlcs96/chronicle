@@ -33,10 +33,10 @@ func (l *Log) Tips(ctx context.Context, docID string) ([]string, error) {
 		return nil, err
 	}
 	rows, err := l.db.QueryContext(ctx,
-		`SELECT id FROM commits FINAL
+		fmt.Sprintf(`SELECT id FROM %s FINAL
 		 WHERE doc_id = ?
-		   AND id NOT IN (SELECT parent FROM commits FINAL WHERE doc_id = ?)
-		 ORDER BY at ASC, id ASC`, docID, docID)
+		   AND id NOT IN (SELECT parent FROM %s FINAL WHERE doc_id = ?)
+		 ORDER BY at ASC, id ASC`, l.t.Commits, l.t.Commits), docID, docID)
 	if err != nil {
 		return nil, fmt.Errorf("changelog-clickhouse: tips: %w", err)
 	}
@@ -57,7 +57,7 @@ func (l *Log) AllCommits(ctx context.Context, limit int) ([]changelog.DocCommit,
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	q := `SELECT doc_id, id, parent, at, authors, message, changes, sig_key_id, signature FROM commits FINAL ORDER BY at DESC, doc_id, id`
+	q := fmt.Sprintf(`SELECT doc_id, id, parent, at, authors, message, changes, sig_key_id, signature FROM %s FINAL ORDER BY at DESC, doc_id, id`, l.t.Commits)
 	args := []any{}
 	if limit > 0 {
 		q += ` LIMIT ?`
@@ -85,7 +85,7 @@ func (l *Log) FindByID(ctx context.Context, commitID string) (changelog.DocCommi
 		return changelog.DocCommit{}, false, err
 	}
 	row := l.db.QueryRowContext(ctx,
-		`SELECT doc_id, id, parent, at, authors, message, changes, sig_key_id, signature FROM commits FINAL WHERE id = ? LIMIT 1`, commitID)
+		fmt.Sprintf(`SELECT doc_id, id, parent, at, authors, message, changes, sig_key_id, signature FROM %s FINAL WHERE id = ? LIMIT 1`, l.t.Commits), commitID)
 	dc, err := scanDocCommit(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return changelog.DocCommit{}, false, nil
@@ -105,7 +105,7 @@ func (l *Log) Seen(ctx context.Context, docID, key string) (changelog.Commit, bo
 	}
 	var commitID string
 	err := l.db.QueryRowContext(ctx,
-		`SELECT commit_id FROM seen FINAL WHERE doc_id = ? AND idempotency_key = ? LIMIT 1`, docID, key).Scan(&commitID)
+		fmt.Sprintf(`SELECT commit_id FROM %s FINAL WHERE doc_id = ? AND idempotency_key = ? LIMIT 1`, l.t.Seen), docID, key).Scan(&commitID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return changelog.Commit{}, false, nil
 	}
@@ -113,7 +113,7 @@ func (l *Log) Seen(ctx context.Context, docID, key string) (changelog.Commit, bo
 		return changelog.Commit{}, false, fmt.Errorf("changelog-clickhouse: seen: %w", err)
 	}
 	row := l.db.QueryRowContext(ctx,
-		`SELECT doc_id, id, parent, at, authors, message, changes, sig_key_id, signature FROM commits FINAL WHERE doc_id = ? AND id = ? LIMIT 1`,
+		fmt.Sprintf(`SELECT doc_id, id, parent, at, authors, message, changes, sig_key_id, signature FROM %s FINAL WHERE doc_id = ? AND id = ? LIMIT 1`, l.t.Commits),
 		docID, commitID)
 	dc, err := scanDocCommit(row)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -132,7 +132,7 @@ func (l *Log) MarkSeen(ctx context.Context, docID, key string, c changelog.Commi
 		return err
 	}
 	_, err := l.db.ExecContext(ctx,
-		`INSERT INTO seen (idempotency_key, doc_id, commit_id, at) VALUES (?, ?, ?, ?)`,
+		fmt.Sprintf(`INSERT INTO %s (idempotency_key, doc_id, commit_id, at) VALUES (?, ?, ?, ?)`, l.t.Seen),
 		key, docID, c.ID, c.At.UTC())
 	if err != nil {
 		return fmt.Errorf("changelog-clickhouse: mark seen: %w", err)
@@ -148,13 +148,13 @@ func (l *Log) CommitsAfter(ctx context.Context, docID, afterID string, limit int
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	q := `SELECT id, parent, at, authors, message, changes, sig_key_id, signature FROM commits FINAL WHERE doc_id = ?`
+	q := fmt.Sprintf(`SELECT id, parent, at, authors, message, changes, sig_key_id, signature FROM %s FINAL WHERE doc_id = ?`, l.t.Commits)
 	args := []any{docID}
 	if afterID != "" {
 		var at time.Time
 		var id string
 		err := l.db.QueryRowContext(ctx,
-			`SELECT at, id FROM commits FINAL WHERE doc_id = ? AND id = ?`, docID, afterID).Scan(&at, &id)
+			fmt.Sprintf(`SELECT at, id FROM %s FINAL WHERE doc_id = ? AND id = ?`, l.t.Commits), docID, afterID).Scan(&at, &id)
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, changelog.ErrNoSuchCommit
 		}
@@ -196,7 +196,7 @@ func (l *Log) PruneSeen(ctx context.Context, olderThan time.Time) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if _, err := l.db.ExecContext(ctx, `DELETE FROM seen WHERE at < ?`, olderThan.UTC()); err != nil {
+	if _, err := l.db.ExecContext(ctx, fmt.Sprintf(`DELETE FROM %s WHERE at < ?`, l.t.Seen), olderThan.UTC()); err != nil {
 		return fmt.Errorf("changelog-clickhouse: prune seen: %w", err)
 	}
 	return nil
@@ -209,7 +209,7 @@ func (l *Log) SaveSnapshot(ctx context.Context, s changelog.Snapshot) error {
 		return err
 	}
 	_, err := l.db.ExecContext(ctx,
-		`INSERT INTO snapshots (doc_id, commit_id, state, at) VALUES (?, ?, ?, ?)`,
+		fmt.Sprintf(`INSERT INTO %s (doc_id, commit_id, state, at) VALUES (?, ?, ?, ?)`, l.t.Snapshots),
 		s.DocID, s.CommitID, string(s.State), time.Now().UTC())
 	if err != nil {
 		return fmt.Errorf("changelog-clickhouse: save snapshot: %w", err)
@@ -224,7 +224,7 @@ func (l *Log) LoadSnapshot(ctx context.Context, docID string) (changelog.Snapsho
 	}
 	var commitID, state string
 	err := l.db.QueryRowContext(ctx,
-		`SELECT commit_id, state FROM snapshots FINAL WHERE doc_id = ? LIMIT 1`, docID).Scan(&commitID, &state)
+		fmt.Sprintf(`SELECT commit_id, state FROM %s FINAL WHERE doc_id = ? LIMIT 1`, l.t.Snapshots), docID).Scan(&commitID, &state)
 	if errors.Is(err, sql.ErrNoRows) {
 		return changelog.Snapshot{}, false, nil
 	}
@@ -242,7 +242,7 @@ func (l *Log) SaveAnnotation(ctx context.Context, a changelog.Annotation) error 
 		return err
 	}
 	_, err := l.db.ExecContext(ctx,
-		`INSERT INTO annotations (doc_id, commit_id, data, at) VALUES (?, ?, ?, ?)`,
+		fmt.Sprintf(`INSERT INTO %s (doc_id, commit_id, data, at) VALUES (?, ?, ?, ?)`, l.t.Annotations),
 		a.DocID, a.CommitID, string(a.Data), time.Now().UTC())
 	if err != nil {
 		return fmt.Errorf("changelog-clickhouse: save annotation: %w", err)
@@ -260,7 +260,7 @@ func (l *Log) LoadAnnotations(ctx context.Context, docID string, commitIDs []str
 	if len(commitIDs) == 0 {
 		return out, nil
 	}
-	q := `SELECT commit_id, data FROM annotations FINAL WHERE doc_id = ? AND commit_id IN (?` +
+	q := fmt.Sprintf(`SELECT commit_id, data FROM %s FINAL WHERE doc_id = ? AND commit_id IN (?`, l.t.Annotations) +
 		strings.Repeat(", ?", len(commitIDs)-1) + `)`
 	args := make([]any, 0, len(commitIDs)+1)
 	args = append(args, docID)

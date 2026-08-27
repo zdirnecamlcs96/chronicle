@@ -610,8 +610,8 @@ can still delete a signed commit outright — that stays
 changelogmemory.New() *Log
 changelogsql.Open(ctx, dsn string, opts ...Option) (*Log, error)
 changelogsql.New(db *sql.DB, opts ...Option) *Log
-changelogclickhouse.Open(ctx, dsn string, opts ...Option) (*Log, error)
-changelogclickhouse.New(db *sql.DB) *Log
+changelogclickhouse.Open(ctx, dsn string, prefix string, opts ...Option) (*Log, error)
+changelogclickhouse.New(db *sql.DB, prefix string) (*Log, error)
 ```
 
 | | `memory` | `sql` (MySQL) | `clickhouse` |
@@ -628,6 +628,7 @@ changelogclickhouse.New(db *sql.DB) *Log
 | **Requires `parseTime=true` in the DSN** so `DATETIME` scans into `time.Time`. `WithDialect` exists but MySQL is the only dialect today. | `sql` |
 | `WithMigrate(true)` runs `CREATE TABLE IF NOT EXISTS` during `Open` and is idempotent. There is **no schema-version table** — breaking schema changes need a hand-written migration out of band ([operations]({{ u_operations }})). | `sql`, `clickhouse` |
 | Idempotency records have **no automatic TTL**. Cron `PruneSeen` with a retention longer than your producer's maximum redelivery window. | `sql`, `clickhouse` |
+| A table prefix is **required** — `New`/`Open` return an error if it's empty or (after stripping a trailing underscore) not a plain identifier. Tables are `<prefix>_changelog_commits`, `<prefix>_changelog_seen`, `<prefix>_changelog_snapshots`, `<prefix>_changelog_annotations`. No default names. | `clickhouse` |
 
 ---
 

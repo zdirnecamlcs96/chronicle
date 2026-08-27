@@ -2,10 +2,19 @@
 
 Durable, columnar `changelog.Log` backend. The adapter creates 4 tables, all
 `ReplacingMergeTree`, all DDL `IF NOT EXISTS` — created by `Migrate(ctx)` or
-automatically via `Open(ctx, dsn, WithMigrate(true))`. Reads use `FINAL` to
-force ClickHouse to collapse duplicate parts at query time rather than
-waiting on a background merge (see [OPERATIONS.md](../../docs/operations.md)
-for the `FINAL` cost in production).
+automatically via `Open(ctx, dsn, tables, WithMigrate(true))`. Reads use
+`FINAL` to force ClickHouse to collapse duplicate parts at query time rather
+than waiting on a background merge (see
+[OPERATIONS.md](../../docs/operations.md) for the `FINAL` cost in
+production).
+
+Table names are derived from a caller-supplied, required prefix: `New(db,
+prefix)` and `Open(ctx, dsn, prefix, opts...)` reject an empty prefix or one
+that (after stripping a trailing underscore) isn't a plain identifier. The
+four table names are `<prefix>_changelog_commits`,
+`<prefix>_changelog_seen`, `<prefix>_changelog_snapshots`,
+`<prefix>_changelog_annotations` — e.g. prefix `"myapp"` (or `"myapp_"`, same
+result) yields `myapp_changelog_commits`. There are no built-in defaults.
 
 ## Schema
 

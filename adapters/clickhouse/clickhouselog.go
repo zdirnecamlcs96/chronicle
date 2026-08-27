@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
+	"strings"
 	"time"
 
 	_ "github.com/ClickHouse/clickhouse-go/v2"
@@ -16,6 +18,38 @@ import (
 // append-only consistency model.
 type Log struct {
 	db *sql.DB
+	t  tables
+}
+
+// tables names the four tables the adapter reads and writes, derived from a
+// caller-supplied prefix (see New/Open).
+type tables struct {
+	Commits     string
+	Seen        string
+	Snapshots   string
+	Annotations string
+}
+
+var tableNameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// newTables validates prefix and derives the four table names from it: a
+// trailing underscore is stripped, then the prefix is joined with a fixed
+// "_changelog_" segment and the table name (e.g. "myapp" ->
+// myapp_changelog_commits).
+func newTables(prefix string) (tables, error) {
+	prefix = strings.TrimSuffix(prefix, "_")
+	if prefix == "" {
+		return tables{}, errors.New("changelog-clickhouse: table prefix is required")
+	}
+	if !tableNameRe.MatchString(prefix) {
+		return tables{}, fmt.Errorf("changelog-clickhouse: invalid table prefix %q: must match %s", prefix, tableNameRe.String())
+	}
+	return tables{
+		Commits:     prefix + "_changelog_commits",
+		Seen:        prefix + "_changelog_seen",
+		Snapshots:   prefix + "_changelog_snapshots",
+		Annotations: prefix + "_changelog_annotations",
+	}, nil
 }
 
 type config struct{ migrate bool }
@@ -26,12 +60,30 @@ type Option func(*config)
 // WithMigrate runs Migrate during Open.
 func WithMigrate(m bool) Option { return func(c *config) { c.migrate = m } }
 
-// New wraps an existing *sql.DB opened against the ClickHouse driver.
-func New(db *sql.DB) *Log { return &Log{db: db} }
+// New wraps an existing *sql.DB opened against the ClickHouse driver. prefix
+// is required and names the four tables <prefix>_changelog_commits,
+// <prefix>_changelog_seen, <prefix>_changelog_snapshots,
+// <prefix>_changelog_annotations (e.g. "myapp" -> myapp_changelog_commits). A
+// trailing underscore on prefix is stripped before joining.
+func New(db *sql.DB, prefix string) (*Log, error) {
+	t, err := newTables(prefix)
+	if err != nil {
+		return nil, err
+	}
+	return &Log{db: db, t: t}, nil
+}
 
 // Open dials a ClickHouse DSN (clickhouse://user:pass@host:9000/db), pings, and
-// optionally migrates.
-func Open(ctx context.Context, dsn string, opts ...Option) (*Log, error) {
+// optionally migrates. prefix is required and names the four tables
+// <prefix>_changelog_commits, <prefix>_changelog_seen,
+// <prefix>_changelog_snapshots, <prefix>_changelog_annotations (e.g. "myapp"
+// -> myapp_changelog_commits). A trailing underscore on prefix is stripped
+// before joining.
+func Open(ctx context.Context, dsn string, prefix string, opts ...Option) (*Log, error) {
+	t, err := newTables(prefix)
+	if err != nil {
+		return nil, err
+	}
 	cfg := config{}
 	for _, o := range opts {
 		o(&cfg)
@@ -44,7 +96,7 @@ func Open(ctx context.Context, dsn string, opts ...Option) (*Log, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("changelog-clickhouse: ping: %w", err)
 	}
-	l := &Log{db: db}
+	l := &Log{db: db, t: t}
 	if cfg.migrate {
 		if err := l.Migrate(ctx); err != nil {
 			_ = db.Close()
@@ -76,7 +128,7 @@ func (l *Log) AppendCommit(ctx context.Context, docID string, c changelog.Commit
 		return fmt.Errorf("changelog-clickhouse: marshal changes: %w", err)
 	}
 	_, err = l.db.ExecContext(ctx,
-		`INSERT INTO commits (doc_id, id, parent, at, authors, message, changes, sig_key_id, signature) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		fmt.Sprintf(`INSERT INTO %s (doc_id, id, parent, at, authors, message, changes, sig_key_id, signature) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, l.t.Commits),
 		docID, c.ID, c.Parent, c.At.UTC(), string(authors), c.Message, string(changes), c.SigKeyID, string(c.Signature))
 	if err != nil {
 		return fmt.Errorf("changelog-clickhouse: insert: %w", err)
@@ -91,7 +143,7 @@ func (l *Log) Head(ctx context.Context, docID string) (string, error) {
 	}
 	var id string
 	err := l.db.QueryRowContext(ctx,
-		`SELECT id FROM commits FINAL WHERE doc_id = ? ORDER BY at DESC, id DESC LIMIT 1`, docID).Scan(&id)
+		fmt.Sprintf(`SELECT id FROM %s FINAL WHERE doc_id = ? ORDER BY at DESC, id DESC LIMIT 1`, l.t.Commits), docID).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
 	}
@@ -106,7 +158,7 @@ func (l *Log) Commits(ctx context.Context, docID string, limit int) ([]changelog
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	q := `SELECT id, parent, at, authors, message, changes, sig_key_id, signature FROM commits FINAL WHERE doc_id = ? ORDER BY at DESC, id DESC`
+	q := fmt.Sprintf(`SELECT id, parent, at, authors, message, changes, sig_key_id, signature FROM %s FINAL WHERE doc_id = ? ORDER BY at DESC, id DESC`, l.t.Commits)
 	args := []any{docID}
 	if limit > 0 {
 		q += ` LIMIT ?`

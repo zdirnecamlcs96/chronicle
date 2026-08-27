@@ -37,11 +37,14 @@ func TestClickHouseLog_Conformance(t *testing.T) {
 	}
 
 	newLog := func(t *testing.T) (changelog.Log, func()) {
-		l := changelogclickhouse.New(db)
+		l, err := changelogclickhouse.New(db, "chronicle")
+		if err != nil {
+			t.Fatalf("new: %v", err)
+		}
 		if err := l.Migrate(context.Background()); err != nil {
 			t.Fatalf("migrate: %v", err)
 		}
-		for _, tbl := range []string{"commits", "seen", "snapshots"} {
+		for _, tbl := range []string{"chronicle_changelog_commits", "chronicle_changelog_seen", "chronicle_changelog_snapshots"} {
 			if _, err := db.Exec("TRUNCATE TABLE IF EXISTS " + tbl); err != nil {
 				t.Fatalf("truncate %s: %v", tbl, err)
 			}
@@ -74,12 +77,15 @@ func TestClickHouseLog_Tips(t *testing.T) {
 		t.Fatalf("ping %s: %v", dsn, err)
 	}
 
-	l := changelogclickhouse.New(db)
+	l, err := changelogclickhouse.New(db, "chronicle")
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
 	ctx := context.Background()
 	if err := l.Migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
-	for _, tbl := range []string{"commits", "seen", "snapshots"} {
+	for _, tbl := range []string{"chronicle_changelog_commits", "chronicle_changelog_seen", "chronicle_changelog_snapshots"} {
 		if _, err := db.Exec("TRUNCATE TABLE IF EXISTS " + tbl); err != nil {
 			t.Fatalf("truncate %s: %v", tbl, err)
 		}
@@ -142,12 +148,15 @@ func TestClickHouseLog_PruneSeen(t *testing.T) {
 		t.Fatalf("ping %s: %v", dsn, err)
 	}
 
-	l := changelogclickhouse.New(db)
+	l, err := changelogclickhouse.New(db, "chronicle")
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
 	ctx := context.Background()
 	if err := l.Migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
-	for _, tbl := range []string{"commits", "seen", "snapshots"} {
+	for _, tbl := range []string{"chronicle_changelog_commits", "chronicle_changelog_seen", "chronicle_changelog_snapshots"} {
 		if _, err := db.Exec("TRUNCATE TABLE IF EXISTS " + tbl); err != nil {
 			t.Fatalf("truncate %s: %v", tbl, err)
 		}

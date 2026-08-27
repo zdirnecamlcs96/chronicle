@@ -272,6 +272,7 @@ import changelogclickhouse "github.com/zdirnecamlcs96/chronicle/adapters/clickho
 
 log, err := changelogclickhouse.Open(ctx,
     "clickhouse://default:@127.0.0.1:9000/changelog",
+    "myapp", // tables: myapp_changelog_commits, myapp_changelog_seen, ...
     changelogclickhouse.WithMigrate(true))
 defer log.Close()
 ```
